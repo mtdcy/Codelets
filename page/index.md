@@ -5,7 +5,7 @@
 
 ## 编程
 
-* [SHELL脚本](shell.md)
+* [shell](shell.md)
 
 ## 系统管理 
 

@@ -1,0 +1,7 @@
+# this is an example file
+# host and net 
+192.168.0.1         # support ip address
+192.168.1.0/24      # support cidr address
+# domain and dns
+@8.8.8.8            # always append
+www.example.com     # support domain name

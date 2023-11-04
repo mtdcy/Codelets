@@ -1,0 +1,98 @@
+#!/bin/bash
+# A pretty iptables script.
+# Copyright (c) Chen Fang 2023, mtdcy.chen@gmail.com.
+#
+# ==============================================================================
+# ============================ Begin of AFW Config =============================
+
+WAN=wan0            # IPv6 wan, no IPv6 NAT
+LAN=lan0            # IPv4 lan & wan => default route 
+N2N=n2n0            # secondary wan => route with ipset
+NET=10.10.10.0/24   # local net cidr
+LIP=10.10.10.2      # LAN ip
+NIP=10.20.30.2      # N2N ip
+WIP=172.31.1.2      # WAN ip
+
+SNAT4LAN="SNAT --to $LIP"
+#SNAT4WAN="MASQUERADE"
+SNAT4WAN="SNAT --to $WIP"
+SNAT4N2N="SNAT --to $NIP"
+
+# ==============================================================================
+# ==================================== IPLOG ===================================
+#IPLOG  #source         #dest           #tcp|udp:dports     #match      #label
+#IPLOG   any             any             all                 "$LOCAL"    "LOCAL"
+
+# ==============================================================================
+# =================================== DNAT =====================================
+#       #source         #tcp,udp[:dports]           #destination        #comments 
+
+DNAT    any             tcp:548,139,445             10.10.10.200        "NAS/SMB"   # AFP/SMB
+DNAT    any             tcp:6690                    10.10.10.200        "NAS/DRIVE" # Synology Drive
+
+# SSH 
+DNAT    any             tcp:6015                    10.10.10.2:22       "SSH/DMZ"   # ues the same port as ECS
+DNAT    any             tcp:9922                    10.10.10.200:22     "SSH/NAS"   # for rsync 
+
+DNAT    any             tcp:3389                    10.10.10.202        "WIN/RDP"
+
+# docker compatible
+DNAT    any             all                         DOCKER              "DOCKER"
+# => always after our DNAT rules, and before our Allow/Block rules
+
+# ==============================================================================
+
+# ==============================================================================
+# ================================= Allow/Block ================================
+#A/B    #source         #tcp|udp[:dports]           #match              #comments
+ALLOW   any             all                         "$TRACKED"          "ALLOW/Tracked" # Allow Tracked Connections 
+ALLOW   lo              all                         ""                  "ALLOW/lo"
+ALLOW   any             icmp                        ""                  "ALLOW/ICMP"
+ALLOW   any             igmp                        ""                  "ALLOW/IGMP"
+ALLOW   any             udp:67,68                   ""                  "ALLOW/DHCP"
+
+BLOCK   $WAN            all                         ""                  "No IPv4 @ WAN" # IPv6 wan, block v4 traffics
+
+#ALLOW   $N2N            all                         ""                  "ALLOW/N2N"     # Allow All @ N2N
+ALLOW   $NET            all                         ""                  "ALLOW/Local"   # Allow All Local Traffics
+
+ALLOW   $NET            tcp:22                      ""                  "ALLOW/ssh"     # Local Only
+ALLOW   any             udp:53                      ""                  "ALLOW/DNS"
+ALLOW   any             tcp:80,443,8443             ""                  "ALLOW/http"    # 
+ALLOW   any             tcp:123                     ""                  "ALLOW/NTP"
+ALLOW   $NET            udp:1900                    ""                  "ALLOW/UPnP"
+ALLOW   any             tcp:3389                    ""                  "ALLOW/RDP"
+ALLOW   any             tcp:5201                    ""                  "ALLOW/iperf3"
+ALLOW   $NET            tcp,udp:7070                ""                  "ALLOW/Socks5"
+ALLOW   any             tcp,udp:6677                ""                  "ALLOW/N2N"
+
+BLOCK   any             all                         ""                  "BLOCK/ALL"     # FINAL: Block All
+# ==============================================================================
+
+# ==============================================================================
+# ==================================== NAT =====================================
+#NAT    #dest           #source         #match      #TARGET             #comments
+
+FORWARD 0.0.0.1         any             ""          DROP                "Black Hole"
+FORWARD $WAN            any             ""          DROP                "No IPv4 @ WAN"
+FORWARD any             $WAN            ""          DROP                "No IPv4 @ WAN"
+
+# DOCKER compatible 
+FORWARD docker0         any             ""          RETURN              "DOCKER"
+FORWARD any             docker0         ""          RETURN              "DOCKER"
+
+#NAT1    $WAN            any             ""          "$SNAT4WAN"         "NAT/WAN"       # ? -> WAN
+
+# => we want to keep source address info, so ACCEPT traffics to Local NET without SNAT 
+#  => this is why we want to Allow/Block @ PREROUTING 
+#   => DNAT works without SNAT
+FORWARD $LAN            any             ""          ACCEPT              "NAT/LAN" 
+FORWARD any             $LAN            ""          ACCEPT              "NAT/LAN"
+SNAT    $LAN            any             "! -d $NET" "$SNAT4LAN"         "NAT/LAN"       # tx traffics 
+SNAT    $LAN            $NET            "-d $NET"   "$SNAT4LAN"         "NAT/Local"     # Local NET SNAT
+
+FORWARD $N2N            !$N2N           "$TCPSYN"   "$TCPMSS 1300"      "N2N/TCPMSS"
+NAT1    $N2N            !$N2N           ""          "$SNAT4N2N"         "NAT/N2N"       # LAN -> N2N
+
+FORWARD any             any             ""          AFW-DROP            "NAT/END"       # FINAL: Abort Forwarding 
+# ==============================================================================

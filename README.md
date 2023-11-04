@@ -1,3 +1,3 @@
 # Codelets
 
-Just some codelets and pages
+Just some [codelets](code/index.md) and [pages](page/index.md).

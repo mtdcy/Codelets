@@ -1,5 +1,1 @@
-# ---> GNOMEShellExtension
-# Ignored files for GNOME extension git repository
-
-*.zip
-
+.DS_Store

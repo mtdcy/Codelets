@@ -22,8 +22,7 @@
 ## 网络管理
 
 * [IP网络](net/ip.md)
+* [网络命令](net/cmdlets.md)
 * [iptables](net/iptables.md)
-* [工具](net/cmdlets.md)
 * [nginx](net/nginx.md)
-
 

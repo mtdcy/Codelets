@@ -25,7 +25,22 @@ esxcli software vib update -d <full-path-to-zip-file>
 ovftool vi://username:password@ip:443/path/to/vm vm.ova
 ```
 
-## 设置主机名
+## IPv4 & IPv6
+
+web界面对IP网络操作可能不成功，或直接报错
+
+```shell
+esxcli network ip interface ipv4 get
+esxcli network ip interface ipv4 set -i vmk0 -I 10.10.10.254 -N 255.255.255.0 -t static
+```
+
+### 关闭IPv6
+
+```shell
+esxcli system module parameters set -m tcpip4 -p ipv6=0
+```
+
+### 设置主机名
 
 [参考](https://superuser.com/questions/1757653/configure-vmware-esxi-host-to-broadcast-its-domain-name-like-avahi-on-linux)
 
@@ -95,6 +110,12 @@ esxcfg-vswitch -L vusb0 vSwitch1
 # webui中查看，vSwitch还是没有上行链路
 /etc/init.d/hostd restart
 ```
+
+## 客户机虚拟化
+
+编辑 - CPU - 向客户机操作系统公开三件辅助的虚拟化
+
+`vhv.enable = "TRUE"`
 
 ## PCI直通理论
 
@@ -297,13 +318,6 @@ ehci:0.deviceType       disk
 ehci:0.fileName         virt-usb-key.vmdk
 ehci:0.readonly         FALSE
 ```
-
-## 关闭IPv6
-
-```shell
-esxcli system module parameters set -m tcpip4 -p ipv6=0
-```
-
 
 ## img <-> vmdk
 
@@ -523,3 +537,39 @@ csrutil authenticated-root disable
 esxcli system settings kernel set -s pciExperimentalFlags -v 16
 ```
 
+## 网卡`tx hang`
+
+虚拟机报:
+
+```shell
+journalctl -b -g vmxnet3
+
+vmxnet3 0000:0b:00.0 ens192: tx hang
+```
+
+同时vmkernel.log报：
+
+```shell
+grep -i "hang detected" /var/log/vmkernel.log
+
+Vmxnet3: 21228: DMZ,00:0c:29:9e:da:e6, portID(67108877): Hang detected,numHangQ: 4, enableGen: 39
+INFO (ne1000): hardware TX hang detected on vmnic0
+```
+
+[参考1](https://kb.vmware.com/s/article/81574)：分析这个和硬件相关。
+
+[参考2](https://communities.vmware.com/t5/ESXi-Discussions/Strange-Ethernet-error-that-I-can-t-find-any-info-on/m-p/2741957/highlight/true#M270555)：建议禁用ne1000，使用e1000e。 
+
+```shell
+esxcli system module list | grep 1000
+esxcli system module set --enabled=false --module=ne1000
+```
+
+**找不到替换驱动e1000e，目前flings无法访问了**
+
+[参考3](https://communities.vmware.com/t5/ESXi-Discussions/ESXi-6-5U1-INFO-ne1000-false-RX-hang-detected-on-vmnic0/td-p/951621)：建议禁用TSO。
+
+```shell
+sudo ethtool -k ens192 | grep segmentation
+sudo ethtool -K ens192 tso off
+```

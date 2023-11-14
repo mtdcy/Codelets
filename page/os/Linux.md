@@ -235,7 +235,7 @@ exit
 
 **调用错误的OpenCL**
 
-在AMD平台上，Jellyfin可能调用错误的OpenCL错，删除不需要的icd文件
+在AMD平台上，Jellyfin可能调用错误的OpenCL库，删除不需要的icd文件
 
 `rm /etc/OpenCL/vendors/nvidia.icd`
 

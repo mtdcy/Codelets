@@ -19,8 +19,8 @@ deb http://mirrors.aliyun.com/debian-security bullseye-security main contrib non
 
 # OR
 sed -i \
-    -e 's/ftp.debian.org/mirrors.aliyun.com/g' \
-    -e 's/security.debian.org/mirrors.aliyun.com\/debian-security/g' \
+    -e 's/ftp.debian.org/mirrors.ustc.edu.cn/g' \
+    -e 's/security.debian.org/mirrors.ustc.edu.cn\/debian-security/g' \
     -e 's/^deb .*$/& non-free/g' \
     /etc/apt/sources.list
 ```

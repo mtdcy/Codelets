@@ -71,3 +71,5 @@ sysctl -w net.bridge.bridge-nf-call-arptables=0
 ```
 
 **由于`br_netfilter`的依赖关系，直接写在`sysctl.conf`是不行的**
+
+> bridge: filtering via arp/ip/ip6tables is no longer available by default. Update your scripts to load br_netfilter if you need this.

@@ -7,7 +7,7 @@
 [ -f $(dirname $0)/xlib.sh ] && . $(dirname $0)/xlib.sh || xlog() { echo $@; }
 
 usage() {
-cat << EOF
+    cat << EOF
 # A photo import and organize script 
 # Copyright (c) Chen Fang 2023, mtdcy.chen@gmail.com. 
 #
@@ -21,15 +21,15 @@ src="$1"
 dst="$2"
 
 is_video_file() {
-	case $(echo "$1" | tr 'A-Z' 'a-z') in 
-		*.mov|*.mp4|*.mkv|*.m4a|*.3gp)	return 0;;
-		*)								return 1;;
-	esac
+    case $(echo "$1" | tr 'A-Z' 'a-z') in 
+        *.mov|*.mp4|*.mkv|*.m4a|*.3gp)	return 0;;
+        *)								return 1;;
+    esac
 }
 
 # get creation time => y m d H M S
 creation_time() {
-	local ts 
+    local ts 
     if which exiftool 2>&1 > /dev/null; then
         # video files has a field 'Creation Date', which has time zone info.
         # but image files don't have it, yet its 'Create Date' has time zone info
@@ -52,11 +52,11 @@ creation_time() {
         fi
     fi
 
-	# empty string ?
-	[ ! -z "$ts" -a "$ts" != " " ] && echo "$ts" && return 0
+    # empty string ?
+    [ ! -z "$ts" -a "$ts" != " " ] && echo "$ts" && return 0
 
-	# take modify date instead 
-	echo $(stat -c %y "$1" | cut -d. -f1) && return 0
+    # take modify date instead 
+    echo $(stat -c %y "$1" | cut -d. -f1) && return 0
 }
 
 findc="find \"$src\" -type f"
@@ -66,36 +66,36 @@ findc+=" -not -path \"*/@eaDir/*\""
 findc+=" -not -path \".DS_Store\""
 
 eval $findc | while read file; do
-    #ts=$(creation_time "$file")
-    #echo -e "$(basename $file) \t${ts:=-}"
-    #continue
+#ts=$(creation_time "$file")
+#echo -e "$(basename $file) \t${ts:=-}"
+#continue
 
-	# parse time string
+    # parse time string
     IFS=' :.-+' read y m d H M S _ <<< $(creation_time "$file")
 
-	p="IMG"
-	is_video_file "$file" && p="VID"
+    p="IMG"
+    is_video_file "$file" && p="VID"
 
-	# check whether target exists
-	target="$dst/$y/$m/${p}_$y$m${d}_$H$M$S."${file##*.}
+    # check whether target exists
+    target="$dst/$y/$m/${p}_$y$m${d}_$H$M$S."${file##*.}
 
-	exists=0
-	while [ -f "$target" ]; do
-		sum0=$(md5sum "$file" | cut -d' ' -f1)
-		sum1=$(md5sum "$target" | cut -d' ' -f1)
+    exists=0
+    while [ -f "$target" ]; do
+        sum0=$(md5sum "$file" | cut -d' ' -f1)
+        sum1=$(md5sum "$target" | cut -d' ' -f1)
 
-		[ "$sum0" = "$sum1" ] && exists=1 && break
+        [ "$sum0" = "$sum1" ] && exists=1 && break
 
-		S=$(expr $S + 1)
+        S=$(expr $S + 1)
 
-		target="$dst/$y/$m/${p}_$y$m${d}_$H$M$S."${file##*.}
-	done
+        target="$dst/$y/$m/${p}_$y$m${d}_$H$M$S."${file##*.}
+    done
 
     # inplace import?
     [ "$file" = "$target" ] && xlog "$file skipped ..." && continue
 
     # already exists?
-	if [ $exists -gt 0 ]; then 
+    if [ $exists -gt 0 ]; then 
         # when doing inplace importing, delete files will be danger
         if [ "$src" = "$dst" ]; then
             xlog "$file => $target, duplicate files ..."
@@ -107,9 +107,9 @@ eval $findc | while read file; do
         continue
     fi
 
-	xlog "$file => $target"
+    xlog "$file => $target"
 
-	mkdir -pv $(dirname "$target")
+    mkdir -pv $(dirname "$target")
 
     # inplace import?
     [ "$src" = "$dst" ] && mv "$file" "$target" || cp -a "$file" "$target"

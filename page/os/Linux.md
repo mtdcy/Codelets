@@ -156,7 +156,7 @@ After=network-online.target
 [Mount]
 What=<ip>:/path/to/nfs
 Where=/nfs/mount/pointer
-Options=auto,bg,retry=30,nofail,noatime,nolock,tcp,actimeo=1800
+Options=auto,retry=30,nofail,noatime,nolock,tcp,actimeo=1800
 Type=nfs
 TimeoutSec=60
 

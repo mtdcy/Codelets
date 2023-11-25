@@ -3,6 +3,8 @@
 * [afw](afw.md)
 * [ip2route](ip2route.md)
 
+* [软Raid测试](mdadm.md)
+
 ## 编程
 
 * [shell](shell.md)

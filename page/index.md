@@ -18,6 +18,7 @@
 
 * [ESXi](vm/esxi.md)
 * [PVE](vm/PVE.md)
+* [KVM](vm/kvm.md)
 
 ## 网络管理
 

@@ -407,3 +407,82 @@ dd if=seq.test of=/dev/null bs=1M
 sudo apt install iozone
 iozone -t1 -i0 -i2 -r1k -s1g /tmp
 ```
+
+
+## 切换到NM
+
+[原因](https://github.com/cockpit-project/cockpit/issues/17040)：Cockpit使用NM进行网络管理，但Ubuntu Server默认使用netplan + networkd。
+
+**切换到NM存在一定的问题（如下），但对Cockpit的贡献有限，而且可能导致服务器原有配置也需要修改，所以请谨慎考虑**
+
+```shell 
+#1. netplan: 清除现有配置
+sudo mv /etc/netplan/00-networkd.yaml 00-networkd.yaml.bak
+#2. netplan: 将renderer切换到NetworkManager
+cat > 01-NM.yaml << EOF
+network:
+  version: 2
+  renderer: NetworkManager
+EOF
+sudo mv 01-NM.yaml /etc/netplan/
+#3. 应用
+sudo netplan generate
+sudo netplan apply
+```
+
+现在开始，就可以通过Cockpit配置其他网络参数了！但应用的过程会导致网络中断，如果是远程服务器，可先用`nmcli`或`nmtui`设置好网络
+
+```shell
+#LAN: bridge
+sudo nmcli conn add type bridge con-name LAN4 ifname lan4 ip4 10.10.10.254/24 gw4 10.10.10.1
+sudo nmcli conn add type bridge-slave ifname enp14s0 master LAN4
+sudo nmcli conn add type bridge-slave ifname eno1 master LAN4
+#WAN: ipv6 lan
+sudo nmcli conn add type ethernet con-name WAN6 ifname ens161
+sudo nmcli conn mod WAN6 ipv4.never-default true
+# apply
+sudo netplan generate
+sudo netplan apply
+```
+
+**通过Cockpit修改某些网络选项会提示无法连接，实际多等等就好了，不知道是哪边的问题**
+
+### 修改`/etc/resolv.conf`
+
+**由于切换到NM，`systemd-resolved`也就停止了工作**
+
+```shell
+ls -l /etc/resolv.conf
+# 如果是stub-resolv.conf
+sudo ln -svf /run/NetworkManager/no-stub-resolv.conf /etc/resolv.conf
+```
+
+### IPv6 地址丢失
+
+修改网络接口参数后，全局IPv6地址丢失。
+
+```shell
+journalctl -b -g dhcp6                                                                                                                                                         22:35:56
+Nov 14 21:45:11 DMZ NetworkManager[791]: <info>  [1699969511.4428] dhcp6 (ens161): activation: beginning transaction (timeout in 45 seconds)
+Nov 14 21:45:11 DMZ NetworkManager[791]: <info>  [1699969511.4438] dhcp6 (ens161): state changed new lease, address=240e:381:73a:ca20::afb
+Nov 14 22:05:42 DMZ NetworkManager[791]: <info>  [1699970742.2118] dhcp6 (ens161): canceled DHCP transaction
+```
+
+**只有开机时dhcp6工作了，其他时间都是canceled**
+
+[参考](https://askubuntu.com/questions/679749/ipv6-global-address-missing-after-link-flap) 设置`keep_addr_on_down` => **无效**
+
+[参考](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/9/html/configuring_and_managing_networking/configuring-networkmanager-dhcp-settings_configuring-and-managing-networking) 修改`dhcp client` => **无效**
+
+### `systemd-networkd-wait-online.service` timeout
+
+```shell
+systemctl list-dependencies network-online.target
+# 禁用 systemd-networkd-wait-online.service
+sudo systemctl disable systemd-networkd-wait-online.service
+sudo systemctl mask systemd-networkd-wait-online.service
+# 启用 NetworkManager-wait-online.service
+sudo systemctl unmask NetworkManager-wait-online.service
+sudo systemctl enable NetworkManager-wait-online.service
+```
+

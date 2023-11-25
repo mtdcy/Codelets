@@ -51,6 +51,24 @@ ls | echo       # nothing
 ls | xargs echo # Good
 ```
 
+### 脚本输出到`syslog`
+
+[参考](https://www.urbanautomaton.com/blog/2014/09/09/redirecting-bash-script-output-to-syslog/)
+
+```shell
+exec 1> >(logger -t $(basename $0)) 2>&1
+```
+
+显眼模式：
+
+```shell
+exec > >(logger -t $(basename $0))
+exec 2> >(logger -t $(basename $0) -p user.error)
+```
+
+
+**bash only**
+
 ## 字符串
 
 ### 默认值

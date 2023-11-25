@@ -39,15 +39,18 @@ sudo vim /etc/systemd/system/network-online.target.wants/systemd-networkd-wait-o
 ExecStart=/lib/systemd/systemd-networkd-wait-online --any --timeout=30
 ```
 
-## 必须禁用的服务
+### 禁用`multipathd`
 
-有些服务真的不是普通用户（包括一般服务器）需要的。真的搞不懂为什么要默认开启，而且CPU占用还不低。
+多路径存储
 
 ```shell
-sudo systemctl disable multipathd.service # 多路径存储
+sudo systemctl disable multipathd.socket
+sudo systemctl mask multipathd.socket 
+sudo systemctl disable multipathd.service
+sudo systemctl mask multipathd.service 
 ```
 
-### 禁用cloud-init
+### 禁用`cloud-init`
 
 ```shell
 #1. stop cloud-init 
@@ -59,6 +62,31 @@ sudo dpkg-reconfigure cloud-init # uncheck everything except 'None'
 sudo apt-get purge cloud-init
 sudo rm -rf /etc/cloud/ && sudo rm -rf /var/lib/cloud/
 ```
+
+### 启用`/etc/rc.local`
+
+```shell
+sudo systemctl enable rc-local.service
+sudo touch /etc/rc.local
+sudo chmod a+x /etc/rc.local
+```
+
+`rc.local`内容：
+
+```bash
+#!/bin/bash
+exec 1> >(logger -t $(basename $0)) 2>&1
+
+# your code here
+
+exit 0
+```
+
+## `sysctl.conf`
+
+### IPv4 & IPv6
+
+
 
 ## 同时使用`iptables`和`nft`
 
@@ -170,6 +198,34 @@ WantedBy=remote-fs.target
 
 ## GPU
 
+### NVidia
+
+https://developer.nvidia.com/video-encode-decode-gpu-support-matrix
+
+```shell
+sudo ubuntu-drivers install nvidia:525
+sudo reboot 
+# check 
+cat /proc/driver/nvidia/version
+nvidia-smi
+```
+
+#### 多GPU处理
+
+GPU初始化顺序可能与PCI插槽顺序无关：
+```shell
+ls -l /dev/dri/by-path                                                                                                                                    
+
+lrwxrwxrwx 1 root root  8 Nov 24 23:45 pci-0000:05:00.0-card -> ../card1
+lrwxrwxrwx 1 root root 13 Nov 24 23:45 pci-0000:05:00.0-render -> ../renderD129
+lrwxrwxrwx 1 root root  8 Nov 24 23:56 pci-0000:06:00.0-card -> ../card0
+lrwxrwxrwx 1 root root 13 Nov 24 23:45 pci-0000:06:00.0-render -> ../renderD128
+```
+
+```shell
+sudo nvidia-xconfig
+```
+
 ### AMD 
 
 官方[指导](https://amdgpu-install.readthedocs.io/en/latest/)
@@ -178,8 +234,9 @@ WantedBy=remote-fs.target
 
 ```shell
 #1. 安装驱动
+wget https://repo.radeon.com/amdgpu-install/23.20.00.48/ubuntu/jammy/amdgpu-install_5.7.00.48.50700-1_all.deb
 sudo apt install ./amdgpu-install_5.7.00.48.50700-1_all.deb
-sudo amdgpu-install --no-32 --usecase=multimedia,opencl --vulkan=amdvlk --opencl=legacy,rocr # 根据自己的需求调整
+sudo amdgpu-install --no-32 --usecase=graphics,multimedia,opencl --vulkan=amdvlk --opencl=legacy,rocr # 根据自己的需求调整
 
 sudo usermod -a -G render,video $LOGNAME
 # => jellyfin需要使用gpu
@@ -191,12 +248,12 @@ sudo apt install rocm-smi-lib vainfo vulkan-tools radeontop
 #3. 修正bug
 sudo vim /etc/udev/rules.d/70-amdgpu.rules
 # GROUP="video"
-sudo vim /etc/default/grub
+
+sudo vim /etc/default/grub && sudo update-grub
 # => add amdgpu.dc=0 to GRUB_CMDLINE_LINUX_DEFAULT
 # ===> 只有在遇到问题时才需要添加这个参数
 
 #4. 重启
-sudo update-grub
 sudo reboot
 
 #5. 验证 
@@ -208,6 +265,20 @@ sudo vulkaninfo --summary | grep deviceName
 /usr/lib/jellyfin-ffmpeg/ffmpeg -v debug -init_hw_device opencl
 /usr/lib/jellyfin-ffmpeg/ffmpeg -v debug -init_hw_device vulkan
 ```
+
+**打开或关闭`Secure Boot`需要重新安装驱动**
+
+**No devices found on platform "AMD Accelerated Parallel Processing"**
+
+`echo /opt/rocm/opencl/lib/libamdocl64.so > /etc/OpenCL/vendors/amdocl*.icd` 
+
+**调用错误的OpenCL**
+
+在AMD平台上，Jellyfin可能调用错误的OpenCL库，删除不需要的icd文件
+
+`rm /etc/OpenCL/vendors/nvidia.icd`
+
+**`opencl=legacy`可能安装不上，这时需要禁用`Jellyfin`的`OpenCl`**
 
 ### Docker 
 
@@ -233,12 +304,106 @@ exit
 
 **主机和Docker的gpu驱动必须配置为一样的**
 
-**调用错误的OpenCL**
 
-在AMD平台上，Jellyfin可能调用错误的OpenCL库，删除不需要的icd文件
+### VA-API
 
-`rm /etc/OpenCL/vendors/nvidia.icd`
+```shell
+vainfo --display drm --device /dev/dri/renderD129
 
-**No devices found on platform "AMD Accelerated Parallel Processing"**
+Trying display: drm
+libva info: VA-API version 1.18.0
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_14
+libva info: va_openDriver() returns 0
+vainfo: VA-API version: 1.18 (libva 2.18.0)
+vainfo: Driver version: Mesa Gallium driver 23.2.0-devel for AMD Radeon (TM) Pro WX 4100 (polaris11, LLVM 16.0.6, DRM 3.54, 5.15.0-88-generic)
+vainfo: Supported profile and entrypoints
+      VAProfileMPEG2Simple            :	VAEntrypointVLD
+      VAProfileMPEG2Main              :	VAEntrypointVLD
+      VAProfileVC1Simple              :	VAEntrypointVLD
+      VAProfileVC1Main                :	VAEntrypointVLD
+      VAProfileVC1Advanced            :	VAEntrypointVLD
+      VAProfileH264ConstrainedBaseline:	VAEntrypointVLD
+      VAProfileH264ConstrainedBaseline:	VAEntrypointEncSlice
+      VAProfileH264Main               :	VAEntrypointVLD
+      VAProfileH264Main               :	VAEntrypointEncSlice
+      VAProfileH264High               :	VAEntrypointVLD
+      VAProfileH264High               :	VAEntrypointEncSlice
+      VAProfileHEVCMain               :	VAEntrypointVLD
+      VAProfileHEVCMain               :	VAEntrypointEncSlice
+      VAProfileHEVCMain10             :	VAEntrypointVLD
+      VAProfileJPEGBaseline           :	VAEntrypointVLD
+      VAProfileNone                   :	VAEntrypointVideoProc
+```
 
-`echo /opt/rocm/opencl/lib/libamdocl64.so > /etc/OpenCL/vendors/amdocl*.icd` 
+* 解码 - VAEntrypointVLD
+* 编码 - VAEntrypointEncSlice
+
+#### Jellyfin调用错误的GPU
+
+当存在两个显卡时，指定Jellyfin使用第二张显卡，会导致ffmpeg硬解出现`hwupload_vaapi`错误，主要原因是调用了错误的VA-API。
+
+## 手动启动桌面
+
+```shell
+#1. 安装桌面环境
+sudo apt install ubuntu-desktop-minimal --no-install-recommends
+#2. 设置启动目标
+sudo systemctl set-default graphical.target     # 桌面环境
+sudo systemctl set-default multi-user.target    # 终端环境
+#3. 手动启动桌面
+sudo systemctl start graphical.target
+```
+
+## 远程桌面
+
+### RDP/3389
+
+```shell
+sudo apt install xrdp
+sudo systemctl enable xrdp --now
+# 开放tcp:3389端口
+```
+
+优点：不挑客户端。
+
+缺点：只适用服务器，且默认目标是`multi-user.target`，因为`xrdp`需要控制桌面环境。
+
+#### `Cannot read private key file /etc/xrdp/key.pem: Permission denied`
+
+```shell
+sudo ls -l $(readlink /etc/xrdp/key.pem)
+# => its permissions: root:ssl-cert
+
+# 解决方案
+sudo usermod -aG ssl-cert xrdp
+```
+
+#### 黑屏
+
+```shell
+sudo pkill -f /usr/libexec/gnome-session-binary
+```
+
+### VNC
+
+
+## 磁盘性能测试
+
+### 顺序读写
+
+```shell
+#1. 写
+dd if=/dev/random of=seq.test bs=1M count=1024 conv=fdatasync
+
+#2. 读
+sudo sh -c "/usr/bin/echo 3 > /proc/sys/vm/drop_caches"
+dd if=seq.test of=/dev/null bs=1M
+```
+
+### 随机读写
+
+```shell
+sudo apt install iozone
+iozone -t1 -i0 -i2 -r1k -s1g /tmp
+```

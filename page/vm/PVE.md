@@ -233,6 +233,7 @@ qm importdisk 100 synoboot.vmdk local -format qcow2
 #2. 分离步骤
 # vmdk -> qcow2
 qemu-img convert -p -f vmdk -O qcow2 /mnt/vmfs/arpl-flat.vmdk /var/lib/vz/images/arpl.qcow2
+# => `-flat`这个要看qemu的版本
 
 # 导入虚拟磁盘
 qm importdisk 100 /var/lib/vz/images/arpl.qcow2 local -format qcow2
@@ -606,6 +607,10 @@ qm unlock xxx
 DSM7: 在虚拟机上添加一个串行端口，可以修复PVE系统里直接安全关闭群晖虚拟机
 
 DSM6/7均无需也无法安装qemu-guest-agent，注意：DSM7引导编译带上acpid2，DSM6安装Power button套件。
+
+== 2023.11.23 
+
+参考[这里](https://xpenology.com/forum/topic/69482-qemu-guest-agent-install/)：添加[https://spk7.imnks.com](https://spk7.imnks.com)，然后安装`QEMU Guest Agent`
 
 ### Web管理界面一片空白
 

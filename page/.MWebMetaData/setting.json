@@ -1,9 +1,0 @@
-{
-  "name" : "Codelets",
-  "fileExtension" : ".md",
-  "autoUploadInsertedImage" : false,
-  "folderType" : 10,
-  "mediaFloder" : "assets\/{year}-{mon}",
-  "orderBy" : 0,
-  "newlinesToBR" : 0
-}

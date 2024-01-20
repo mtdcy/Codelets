@@ -1,11 +1,16 @@
-#!/bin/bash 
-# A pretty iptables script.
-# Copyright (c) Chen Fang 2023, mtdcy.chen@gmail.com.
-# 
+#!/bin/bash
+# a pretty iptables script (c) Chen Fang 2023, mtdcy.chen@gmail.com.
+#
 # v0.1  20231030    initial version
+# v0.2  20240120    add env VERBOSE
 
 set +H
 set -e
+
+# options
+VERBOSE=${VERBOSE:-1}
+
+echo "VERBOSE:$VERBOSE"
 
 # constants
 TRACKED="-m conntrack --ctstate RELATED,ESTABLISHED"
@@ -15,10 +20,7 @@ TCPSYN="-p tcp --tcp-flags SYN,RST SYN"
 TCPMSS="TCPMSS --set-mss" # suffix with mss value
 
 usage() {
-cat << EOF
-A pretty iptables script.
-Copyright (c) Chen Fang 2023, mtdcy.chen@gmail.com.
-
+    cat <<EOF
 $(basename $0) <config>
 $(basename $0) COMMAND [parameters...]
 
@@ -60,15 +62,14 @@ EOF
 # IPtable Filter Table
 ipt="iptables"
 IPFT="-t nat"
-BHIP="0.0.0.1"    # Black Hole IP
 # => Filter @ PREROUTING => best for a LAN firewall/DMZ host
 
 # Syntax:
-#   s - source 
+#   s - source
 #   d - destination
-#   p - protocol 
-#   m - match 
-#   j - jump 
+#   p - protocol
+#   m - match
+#   j - jump
 #   t - target
 #   l - label
 
@@ -90,15 +91,15 @@ IPTtmj() {
 # IPTp2m tcp|udp[:dports] [sports] => match-rule
 #  tcp,udp:53:80 => tcp:53:80 + udp:53:80
 IPTp2m() {
-    IFS=':' read proto ports <<< "$@"
+    IFS=':' read proto ports <<<"$@"
 
-    for p in ${proto//,/ }; do 
+    for p in ${proto//,/ }; do
         #[ "$p" = "all" ] && echo "" && continue
 
         local match="-p $p"
-        case "$ports" in 
+        case "$ports" in
             "")         ;;
-            *:*|*,*)    match="$match -m multiport --dports $ports" ;;
+            *:* | *,*)  match="$match -m multiport --dports $ports" ;;
             *)          match="$match -m $p --dport $ports"         ;;
         esac
         echo "$match"
@@ -107,33 +108,34 @@ IPTp2m() {
 
 # IPTs2m source[:sport] => match-rule
 IPTs2m() {
-    IFS=':' read source sp <<< "$@"
+    IFS=':' read source sp <<<"$@"
     [[ $source =~ ^! ]] && not="! " && source=${source#!}
     case "$source" in
-        any|"*")    source="";;
-        *.*.*.*)    source="-s $source";;
-        *)          source="-i $source";;
+        any | "*")  source="" ;;
+        *.*.*.*)    source="-s $source" ;;
+        *)          source="-i $source" ;;
     esac
 
-    [ -z "$sp" ]    || source="$source -m multiport --sports $sp" 
+    [ -z "$sp" ]    || source="$source -m multiport --sports $sp"
     echo "$not$source"
 }
 
 # IPTd2m destination[:dport] => match-rule
 IPTd2m() {
-    IFS=':' read dest dp <<< "$@"
+    IFS=':' read dest dp <<<"$@"
     [[ $dest =~ ^! ]] && not="! " && dest=${dest#!}
     case "$dest" in
-        any|"*")    dest="";;
-        *.*.*.*)    dest="-d $dest";;
-        *)          dest="-o $dest";;
+        any | "*")  dest="" ;;
+        *.*.*.*)    dest="-d $dest" ;;
+        *)          dest="-o $dest" ;;
     esac
 
-    [ -z "$dp" ]    || dest="$dest -m multiport --dports $dp" 
+    [ -z "$dp" ]    || dest="$dest -m multiport --dports $dp"
     echo "$not$dest"
 }
 
 # NEW_TARGET [table] TARGET ["rule1" "rule2" "..."]
+#  => create a new target, otherwise flush if it already exists
 NEW_TARGET() {
     #echo $0 "$@"
     local table="filter"
@@ -142,17 +144,16 @@ NEW_TARGET() {
 
     local target="$1"
     echo "$ipt -t $table -N $target"
-    # create new target, otherwise flush if it already exists
-    $ipt -t $table -N $target 2> /dev/null || $ipt -t $table -F $target
+    $ipt -t $table -N $target 2>/dev/null || $ipt -t $table -F $target
 
     for rule in "${@:2}"; do
         local cmd
-        case "$rule" in 
+        case "$rule" in
             LOG*)
-                IFS=' ' read _ prefix <<< "$rule"
+                IFS=' ' read _ prefix <<<"$rule"
                 cmd="$ipt -t $table -A $target -j LOG --log-prefix \"$prefix => \""
                 ;;
-            *-j*)
+            -j*)
                 cmd="$ipt -t $table -A $target $rule"
                 ;;
             *)
@@ -164,17 +165,21 @@ NEW_TARGET() {
     done
 }
 
-# ADD_TARGET [table] CHAIN jump-to-new-TARGET ["sub rule" "..."]
+# ADD_TARGET [table] CHAIN TARGET ["rule1" "rule2" "..."]
+#  => insert a new target in exists chain
 ADD_TARGET() {
-    #echo $0 "$@"
+    echo $0 "$@"
     local table="filter"
     [[ "$1" =~ ^[a-z]+$ ]] && table="$1" && shift 1
 
     NEW_TARGET "$table" "$2" "${@:3}"
 
     local rule="$1 -j $2"
-    echo "$ipt -t $table -A $rule"
-    $ipt -t $table -C $rule 2>&1 > /dev/null || $ipt -t $table -A $rule
+
+    echo "$ipt -t $table -I $rule"
+    # always delete and then insert
+    $ipt -t $table -D $rule >/dev/null  2>&1 
+    $ipt -t $table -I $rule
     # => we prefer to insert instead of append, but which is not compatible with docker
 }
 
@@ -186,8 +191,8 @@ IPFsmj() {
     local match="$(IPTs2m $1)"
     [ -z "$2" ] || match="$match $2"
     case "$3" in
-        DNAT*)          IPTtmj "AFW-IPF -t nat" "${match# }" "$3" "${@:4}";;
-        *)              IPTtmj "AFW-IPF $IPFT"  "${match# }" "$3" "${@:4}";;
+        DNAT*)          IPTtmj "AFW-IPF -t nat" "${match# }" "$3" "${@:4}" ;;
+        *)              IPTtmj "AFW-IPF $IPFT"  "${match# }" "$3" "${@:4}" ;;
     esac
 }
 
@@ -197,8 +202,8 @@ IPFdmj() {
     local match="$(IPTd2m $1)"
     [ -z "$2" ] || match="$match $2"
     case "$3" in
-        MASQ*|SNAT*)    IPTtmj "AFW-NAT -t nat"     "${match# }" "$3" "${@:4}";;
-        *)              IPTtmj "AFW-NAT -t filter"  "${match# }" "$3" "${@:4}";;
+        MASQ* | SNAT*)  IPTtmj "AFW-NAT -t nat"     "${match# }" "$3" "${@:4}" ;;
+        *)              IPTtmj "AFW-NAT -t filter"  "${match# }" "$3" "${@:4}" ;;
     esac
 }
 
@@ -207,7 +212,7 @@ IPFspmj() {
     while read match; do
         [ -z "$3" ] || match="$match $3"
         IPFsmj "$1" "${match# }" "$4" "${@:5}"
-    done <<< "$(IPTp2m $2)"
+    done <<<"$( IPTp2m $2)"
 }
 
 # IPFdpmj destination tcp:udp[:dports] "match" TARGET [comments]
@@ -215,39 +220,52 @@ IPFdpmj() {
     while read match; do
         [ -z "$3" ] || match="$match $3"
         IPFdmj "$1" "${match# }" "$4" "${@:5}"
-    done <<< "$(IPTp2m $2)"
+    done <<<"$( IPTp2m $2)"
 }
 
 # ==============================================================================
-# BLOCK Input Traffics 
+# BLOCK Input Traffics
 # BLOCK source tcp|udp[:dports] "match" [comments]
 BLOCK() {
     case "$3" in
-        *-j*)   IPFspmj "$1" "$2" "$3" ""       "${@:4}";;
-        *)      IPFspmj "$1" "$2" "$3" AFW-DROP "${@:4}";;
+        *-j*)   IPFspmj "$1" "$2" "$3" ""       "${@:4}" ;;
+        *)      IPFspmj "$1" "$2" "$3" AFW-DROP "${@:4}" ;;
     esac
 }
 
-# ALLOW Input Traffics 
+# ALLOW Input Traffics
 # ALLOW source tcp|udp[:dports] "match" [comments]
 ALLOW() {
     case "$3" in
-        *-j*)   IPFspmj "$1" "$2" "$3" ""     "${@:4}";;
-        *)      IPFspmj "$1" "$2" "$3" ACCEPT "${@:4}";;
+        *-j*)   IPFspmj "$1" "$2" "$3" ""     "${@:4}" ;;
+        *)      IPFspmj "$1" "$2" "$3" ACCEPT "${@:4}" ;;
+    esac
+}
+
+# RETURN source tcp|udp[:dports] "match" [comments]
+RETURN() {
+    case "$3" in
+        *-j*)   IPFspmj "$1" "$2" "$3" ""     "${@:4}" ;;
+        *)      IPFspmj "$1" "$2" "$3" RETURN "${@:4}" ;;
     esac
 }
 
 # DNAT source tcp|udp:dports ip[:port]|TARGET [comments]
 DNAT() {
     case "$3" in
-        *.*.*.*)IPFspmj "$1" "$2" "$LOCAL" "DNAT --to $3" "${@:4}" ;;
-        *)      IPFspmj "$1" "$2" "$LOCAL" "$3"           "${@:4}" ;;
+        *.*.*.*) IPFspmj "$1" "$2" "" "DNAT --to $3" "${@:4}" ;;
+        *)       IPFspmj "$1" "$2" "" "$3"           "${@:4}" ;;
     esac
+    # for DMZ, it seems '$LOCAL' is excess.
+    #case "$3" in
+    #    *.*.*.*) IPFspmj "$1" "$2" "$LOCAL" "DNAT --to $3" "${@:4}" ;;
+    #    *)       IPFspmj "$1" "$2" "$LOCAL" "$3"           "${@:4}" ;;
+    #esac
 }
 
 # FORWARD destination source "match" TARGET [comments]
 FORWARD() {
-    local match="$(IPTs2m $2)" 
+    local match="$(IPTs2m $2)"
     [ -z "$3" ] || match="$match $3"
 
     IPFdmj "$1" "${match# }" "$4" "${@:5}"
@@ -267,16 +285,15 @@ SNAT() {
 # NAT1 destination source "match" to|TARGET [comments]
 NAT1() {
     # FUCK:
-    #  = at least two conditions must be here for each FORWARD command 
+    #  = at least two conditions must be here for each FORWARD command
     #   => spent two days stuck here
-    #    => e.g: FORWARD lan0 any "" ACCEPT won't work 
+    #    => e.g: FORWARD lan0 any "" ACCEPT won't work
     FORWARD "$1" "$2" "$3"          ACCEPT  "${@:5}"
     FORWARD "$2" "$1" "$TRACKED"    ACCEPT  "${@:5}"
 
-
     local TARGET="$4"
-    case "$TARGET" in 
-        ^*.*.*.*)   TARGET="SNAT --to $TARGET" ;; 
+    case "$TARGET" in
+        ^*.*.*.*)   TARGET="SNAT --to $TARGET" ;;
     esac
 
     if [[ $TARGET =~ ^MASQ* ]] || [[ $TARGET =~ ^SNAT* ]]; then
@@ -287,8 +304,6 @@ NAT1() {
     fi
 }
 
-# ==============================================================================
-# IPtable Logger 
 # IPLtml target tcp|udp[:dports] "match" "label"
 IPLtpm() {
     while read match; do
@@ -297,12 +312,14 @@ IPLtpm() {
     done <<< "$(IPTp2m $2)"
 }
 
+# ==============================================================================
+# IPtable Logger
 # IPLOG source destination tcp|udp[:dports] "match" [label]
 IPLOG() {
     local match="$(IPTs2m $1) $(IPTd2m $2)"
     case "$1" in
         *.*.*.*)    pos="$match"        ;;
-        *)          pos="$(IPTd2m $2)"  ;; # no input device for OUTPUT/POSTROUTING 
+        *)          pos="$(IPTd2m $2)"  ;; # no input device for OUTPUT/POSTROUTING
     esac
 
     case "$2" in
@@ -315,45 +332,55 @@ IPLOG() {
     IPLtpm  "AFW-NAT $IPFT" "$3" "$pos $4" "IPL:OUT:${@:5}"
 }
 
-[ "$1" = "help" ] && usage && exit 
+[ "$1" = "help" ] && usage && exit
 
 # always run as root
-[ $(id -u) -ne 0 ] && exec sudo "$0" "$@" 
+[ $(id -u) -ne 0 ] && exec sudo VERBOSE=$VERBOSE "$0" "$@"
 
 # ==============================================================================
-# INITIAL: 
+# INITIAL:
 #  => NEVER FLUSH preset chains
 
-# our targets: 
+# our targets:
 ADD_TARGET      INPUT               AFW-IPF
 ADD_TARGET nat  PREROUTING          AFW-IPF
 ADD_TARGET      FORWARD             AFW-NAT
 ADD_TARGET nat  POSTROUTING         AFW-NAT
 
 # Blocked Packets: LOG -> DROP
-NEW_TARGET      AFW-DROP            "LOG INP:DROP"  DROP
-NEW_TARGET nat  AFW-DROP            "LOG PRE:DROP"  "DNAT --to $BHIP" # => Black Hole
 # => DROP not allowed in nat/PREROUTING, so throw it into a black hole
+if [ $VERBOSE -ne 0 ]; then
+    NEW_TARGET nat  AFW-DROP        "LOG PRE:DROP"  "DNAT --to 0.0.0.1" # => Black Hole
+    NEW_TARGET      AFW-DROP        "LOG NAT:DROP"  DROP
+else
+    NEW_TARGET nat  AFW-DROP        "DNAT --to 0.0.0.1" # => Black Hole
+    NEW_TARGET      AFW-DROP        DROP
+fi
 
 # load afw config
-[ $# -eq 1 ] && { echo "load afw config $1"; source "$1"; exit; }
+[ $# -eq 1 ] && {
+    echo "load afw config $1"
+    source "$1"
+    exit
+}
 
 # library mode
-[ $# -gt 1 ] && { echo "$@"; eval "$@"; exit; }
+[ $# -gt 1 ] && {
+    echo "$@"
+    eval "$@"
+    exit
+}
 
 # ==============================================================================
 # ========================== Begin of Inline Config ============================
-WAN=wan0            # IPv6 wan, no IPv6 NAT
-LAN=lan0            # IPv4 lan & wan => default route 
+LAN=lan4            # IPv4 lan & wan => default route
 N2N=n2n0            # secondary wan => route with ipset
 NET=10.10.10.0/24   # local net cidr
-LIP=10.10.10.2      # LAN ip
+LIP=10.10.10.254    # LAN ip
 NIP=10.20.30.2      # N2N ip
-WIP=172.31.1.2      # WAN ip
+NGW=10.20.30.1      # N2N gw
 
 SNAT4LAN="SNAT --to $LIP"
-#SNAT4WAN="MASQUERADE"
-SNAT4WAN="SNAT --to $WIP"
 SNAT4N2N="SNAT --to $NIP"
 # ==============================================================================
 
@@ -366,46 +393,39 @@ SNAT4N2N="SNAT --to $NIP"
 
 # ==============================================================================
 # =================================== DNAT =====================================
-#       #source         #tcp,udp[:dports]           #destination        #comments 
+#       #source         #tcp,udp[:dports]           #destination        #comments
 
 DNAT    any             tcp:548,139,445             10.10.10.200        "NAS/SMB"   # AFP/SMB
 DNAT    any             tcp:6690                    10.10.10.200        "NAS/DRIVE" # Synology Drive
 
-# SSH 
-DNAT    any             tcp:6015                    10.10.10.2:22       "SSH/DMZ"   # ues the same port as ECS
-DNAT    any             tcp:9922                    10.10.10.200:22     "SSH/NAS"   # for rsync 
+# P2P 
+DNAT    any             tcp:14662,16881             10.10.10.200        "NAS/DL" # Download Station
+DNAT    any             udp:14672,16881             10.10.10.200        "NAS/DL" # Download Station
 
-DNAT    any             tcp:3389                    10.10.10.202        "WIN/RDP"
-
-# docker compatible
-DNAT    any             all                         DOCKER              "DOCKER"
-# => always after our DNAT rules, and before our Allow/Block rules
 # ==============================================================================
 
 # ==============================================================================
 # ================================= Allow/Block ================================
 #A/B    #source         #tcp|udp[:dports]           #match              #comments
-ALLOW   any             all                         "$TRACKED"          "ALLOW/Tracked" # Allow Tracked Connections 
+
+RETURN  docker0         all                         ""                  "DOCKER compliance"
+
 ALLOW   lo              all                         ""                  "ALLOW/lo"
+ALLOW   any             all                         "$TRACKED"          "ALLOW/Tracked" # Allow Tracked Connections
+
+ALLOW   $NET            all                         ""                  "ALLOW/Local"   # Allow All Local Traffics
+ALLOW   $N2N            all                         "-s $NGW"           "ALLOW/N2N/GW"
+
 ALLOW   any             icmp                        ""                  "ALLOW/ICMP"
 ALLOW   any             igmp                        ""                  "ALLOW/IGMP"
 ALLOW   any             udp:67,68                   ""                  "ALLOW/DHCP"
-
-BLOCK   $WAN            all                         ""                  "No IPv4 @ WAN" # IPv6 wan, block v4 traffics
-
-#ALLOW   $N2N            all                         ""                  "ALLOW/N2N"     # Allow All @ N2N
-ALLOW   $NET            all                         ""                  "ALLOW/Local"   # Allow All Local Traffics
-
-ALLOW   $NET            tcp:22                      ""                  "ALLOW/ssh"     # Local Only
-ALLOW   any             udp:53                      ""                  "ALLOW/DNS"
-ALLOW   any             tcp:80,443,8443             ""                  "ALLOW/http"    # 
 ALLOW   any             tcp:123                     ""                  "ALLOW/NTP"
-ALLOW   $NET            udp:1900                    ""                  "ALLOW/UPnP"
-ALLOW   any             tcp:3389                    ""                  "ALLOW/RDP"
-ALLOW   any             tcp:5201                    ""                  "ALLOW/iperf3"
-ALLOW   $NET            tcp,udp:7070                ""                  "ALLOW/Socks5"
+
+ALLOW   any             udp:53                      ""                  "ALLOW/DNS"
+ALLOW   any             tcp:80,443,8443             ""                  "ALLOW/http"    #
+ALLOW   any             tcp:873                     ""                  "ALLOW/rsyncd"
 ALLOW   any             tcp,udp:6677                ""                  "ALLOW/N2N"
-ALLOW   $NET            tcp,udp:9000:9999           ""                  "ALLOW/Tester"  # Local Tester Ports
+#ALLOW   any             tcp,udp:1080                ""                  "ALLOW/Socks"
 
 BLOCK   any             all                         ""                  "BLOCK/ALL"     # FINAL: Block All
 # ==============================================================================
@@ -415,27 +435,22 @@ BLOCK   any             all                         ""                  "BLOCK/A
 #NAT    #dest           #source         #match      #TARGET             #comments
 
 FORWARD 0.0.0.1         any             ""          DROP                "Black Hole"
-FORWARD $WAN            any             ""          DROP                "No IPv4 @ WAN"
-FORWARD any             $WAN            ""          DROP                "No IPv4 @ WAN"
 
-# DOCKER compatible 
-FORWARD docker0         any             ""          RETURN              "DOCKER"
-FORWARD any             docker0         ""          RETURN              "DOCKER"
+# LAN -> N2N
+FORWARD $N2N            any             "$TCPSYN"   "$TCPMSS 1300"      "N2N/TCPMSS"
+NAT1    $N2N            any             ""          "$SNAT4N2N"         "NAT/N2N"
 
-#NAT1    $WAN            any             ""          "$SNAT4WAN"         "NAT/WAN"       # ? -> WAN
+# N2N(gw only) -> LAN
+FORWARD $LAN            $N2N            "-s $NGW"   ACCEPT              "NAT/N2N-LAN"
 
-# => we want to keep source address info, so ACCEPT traffics to Local NET without SNAT 
-#  => this is why we want to Allow/Block @ PREROUTING 
-#   => DNAT works without SNAT
-FORWARD $LAN            any             ""          ACCEPT              "NAT/LAN" 
+# DOCKER compatible
+FORWARD docker0         any             ""          RETURN              "DOCKER compliance"
+FORWARD any             docker0         ""          RETURN              "DOCKER compliance"
+
+FORWARD $LAN            any             "$TRACKED"  ACCEPT              "NAT/LAN"
 FORWARD any             $LAN            ""          ACCEPT              "NAT/LAN"
-SNAT    $LAN            any             "! -d $NET" "$SNAT4LAN"         "NAT/LAN"       # tx traffics 
-SNAT    $LAN            $NET            "-d $NET"   "$SNAT4LAN"         "NAT/Local"     # Local NET SNAT
 
-FORWARD $N2N            !$N2N           "$TCPSYN"   "$TCPMSS 1300"      "N2N/TCPMSS"
-NAT1    $N2N            !$N2N           ""          "$SNAT4N2N"         "NAT/N2N"       # LAN -> N2N
-
-FORWARD any             any             ""          AFW-DROP            "NAT/END"       # FINAL: Abort Forwarding 
+FORWARD any             any             ""          AFW-DROP            "NAT/END"       # FINAL: Abort Forwarding
 # ==============================================================================
 
 #$ipt -nvL

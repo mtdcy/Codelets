@@ -102,13 +102,13 @@ if [ ! -z "$host4" ] || [ -z "$host" ]; then
     WI=$W4
     printf " %-7s %-${WI}s => %-${WI}s %-11s \t%s\n" "#proto" "#source" "#destition" "#state" "# >next | @gw"
     if [ -z "$host" ]; then
-        conntrack -L 2> /dev/null               # list all
+        conntrack -f ipv4 -L 2> /dev/null               # list all
     else
         while read line; do
-            conntrack -L -s $line 2> /dev/null  # match source 
-            conntrack -L -d $line 2> /dev/null  # match destination 
-            conntrack -L -r $line 2> /dev/null  # match reply source 
-            conntrack -L -q $line 2> /dev/null  # match reply destination 
+            conntrack -f ipv4 -L -s $line 2> /dev/null  # match source 
+            conntrack -f ipv4 -L -d $line 2> /dev/null  # match destination 
+            conntrack -f ipv4 -L -r $line 2> /dev/null  # match reply source 
+            conntrack -f ipv4 -L -q $line 2> /dev/null  # match reply destination 
         done <<< "$host4"
     fi | format_lines | sort -u
     echo ""

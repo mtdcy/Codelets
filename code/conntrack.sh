@@ -37,41 +37,48 @@ format_lines() {
         # connection source => destination
         case "$proto" in
             tcp|udp)
-                read src0 dst0 sp0 dp0 conn <<< "$conn"
-                printf " %-7s %-${WI}s => %-${WI}s" "[$proto]" "${src0#src=}:${sp0#sport=}" "${dst0#dst=}:${dp0#dport=}"
+                IFS=' =' read _ src0 _ dst0 _ sp0 _ dp0 conn <<< "$conn"
+                printf " %-7s %-${WI}s => %-${WI}s" "[$proto]" "$src0:$sp0" "$dst0:$dp0"
                 ;;
             *)
-                read src0 dst0 _ _ _ conn <<< "$conn"
-                printf " %-7s %-${WI}s => %-${WI}s" "[$proto]" "${dst0#dst=}" "${src0#src=}"
+                IFS=' =' read _ src0 _ dst0 _ _ _ conn <<< "$conn"
+                printf " %-7s %-${WI}s => %-${WI}s" "[$proto]" "$dst0" "$src0"
                 ;;
         esac
 
         # packets=n bytes=n
+        #  => sysctl -w net.netfilter.nf_conntrack_acct=1
         [[ "$conn" =~ ^packets=         ]] && IFS=' ' read _ conn <<< "$conn"
-        [[ "$conn" =~ ^bytes=           ]] && IFS=' ' read _ conn <<< "$conn"
+        [[ "$conn" =~ ^bytes=           ]] && IFS=' =' read _ bytes conn <<< "$conn"
         # [UNREPLIED]
         [[ "$conn" =~ ^\[UNREPLIED\]    ]] && IFS=' ' read _ conn <<< "$conn" && state="UNREPLIED"
 
-        IFS=' ' read src1 dst1 conn <<< "$conn"
+        if [ ! -z "$bytes" ]; then
+            # shortten states: E - ESTABLISHED, T - TIME_WAIT, S - SYN_SENT, U - UNREPLIED
+            printf ' %7s' $(numfmt --to iec "$bytes")
+            [ ! -z "$state" ] && printf ' [%-.1s]' "$state"
+        else
+            printf ' %11s' "$state"
+        fi
 
-        printf ' %-11s' "$state"
+        # reply source => destination
+        IFS=' =' read _ src1 _ dst1 conn <<< "$conn"
+        case "$proto" in
+            tcp|udp)
+                IFS=' =' read _ sp1 _ dp1 conn <<< "$conn"
+                ;;
+            *)
+                IFS=' ' read _ _ _ conn <<< "$conn"
+                ;;
+        esac
 
-        if [ "${dst0#dst=}" = "${dst1#dst=}" -a "${src0#src=}" != "${src1#src=}" ] ||
-           [ "${src0#src=}" = "${dst1#dst=}" -a "${dst0#dst=}" != "${src1#src=}" ]; then
-            # > netx step
-            case "$proto" in
-                tcp|udp)
-                    IFS=' ' read dp1 sp1 conn <<< "$conn"
-                    echo -ne " \t>${src1#src=}:${dp1#sport=}"
-                    ;;
-                *)
-                    IFS=' ' read _ _ _ conn <<< "$conn"
-                    echo -ne " \t>${src1#src=}"
-                    ;;
-            esac
-        elif [ "${dst0#dst=}" = "${src1#src=}" -a "${src0#src=}" != "${dst1#dst=}" ]; then
+        if [ "$dst0" = "$dst1" -a "$src0" != "$src1" ] ||
+           [ "$src0" = "$dst1" -a "$dst0" != "$src1" ]; then
+            # > next hop
+            [ ! -z "$sp1" ] && echo -ne " \t>$src1:$sp1" || echo -ne " \t>$src1"
+        elif [ "$dst0" = "$src1" -a "$src0" != "$dst1" ]; then
             # @ gateway
-            echo -ne " \t@${dst1#dst=}"
+            [ ! -z "$dp1" ] && echo -ne " \t@$dst1:$dp1" || echo -ne " \t@$dst1"
         fi
 
         echo ""
@@ -94,8 +101,8 @@ if [[ $host =~ $IPv4 ]]; then
 elif [[ $host =~ $IPv6 ]]; then
     host6=$host
 elif [ ! -z "$host" ]; then
-    host4=$(dig +short $host A 2> /dev/null | grep -v '\.$')
-    host6=$(dig +short $host AAAA 2> /dev/null | grep -v '\.$')
+    host4=$(dig +short $host A 2> /dev/null | grep -v '\.$' || true)
+    host6=$(dig +short $host AAAA 2> /dev/null | grep -v '\.$' || true)
     echo -e " #$host => |${host4//$'\n'/;}|${host6//$'\n'/;}|\n"
 fi
 
@@ -104,13 +111,13 @@ if [ ! -z "$host4" ] || [ -z "$host" ]; then
     WI=$W4
     printf " %-7s %-${WI}s => %-${WI}s %-11s \t%s\n" "#proto" "#source" "#destition" "#state" "# >next | @gw"
     if [ -z "$host" ]; then
-        conntrack -f ipv4 -L 2> /dev/null               # list all
+        conntrack -f ipv4 -L 2> /dev/null || true               # list all
     else
         while read line; do
-            conntrack -f ipv4 -L -s $line 2> /dev/null  # match source
-            conntrack -f ipv4 -L -d $line 2> /dev/null  # match destination
-            conntrack -f ipv4 -L -r $line 2> /dev/null  # match reply source
-            conntrack -f ipv4 -L -q $line 2> /dev/null  # match reply destination
+            conntrack -f ipv4 -L -s $line 2> /dev/null || true  # match source
+            conntrack -f ipv4 -L -d $line 2> /dev/null || true  # match destination
+            conntrack -f ipv4 -L -r $line 2> /dev/null || true  # match reply source
+            conntrack -f ipv4 -L -q $line 2> /dev/null || true  # match reply destination
         done <<< "$host4"
     fi | format_lines | sort -u | grep -v "127.0.0.1"
     echo ""
@@ -121,13 +128,13 @@ if [ ! -z "$host6" ] || [ -z "$host" ]; then
     WI=$W6
     printf " %-7s %-${WI}s => %-${WI}s %-11s \t%s\n" "#proto" "#source" "#destition" "#state" "# >next | @gw"
     if [ -z "$host" ]; then
-        conntrack -f ipv6 -L 2> /dev/null               # list all
+        conntrack -f ipv6 -L 2> /dev/null || true               # list all
     else
         while read line; do
-            conntrack -f ipv6 -L -s $line 2> /dev/null  # match source
-            conntrack -f ipv6 -L -d $line 2> /dev/null  # match destination
-            conntrack -f ipv6 -L -r $line 2> /dev/null  # match reply source
-            conntrack -f ipv6 -L -q $line 2> /dev/null  # match reply destination
+            conntrack -f ipv6 -L -s $line 2> /dev/null || true  # match source
+            conntrack -f ipv6 -L -d $line 2> /dev/null || true  # match destination
+            conntrack -f ipv6 -L -r $line 2> /dev/null || true  # match reply source
+            conntrack -f ipv6 -L -q $line 2> /dev/null || true  # match reply destination
         done <<< "$host6"
     fi | format_lines | sort -u | grep -v "::1"
     echo ""

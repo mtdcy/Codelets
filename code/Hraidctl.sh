@@ -22,7 +22,7 @@ par_is_size() {
 }
 
 # $0 <prefix>
-next_node() {
+block_device_next() {
     for i in {0..255}; do
         if ! [ -e "$1$i" ]; then
             echo "$1$i"
@@ -79,16 +79,22 @@ disk() {
             echocmd parted "$disk" print free
             ;;
         size) # size [total|free] in {K,M,G,T,P}, default: total
+            #!! 'size free' on disk partition is undefined  !!#
             local total end
-            IFS=' :' read -r _ _ total <<< "$(parted "$disk" unit 'MB' print | grep "^Disk $disk:" | sed 's/MB//g')"
+            IFS=' :' read -r _ _ total <<< "$( \
+                parted "$disk" unit 'MB' print 2>/dev/null | grep "^Disk $disk:" | sed 's/MB//g' \
+            )"
             case "$1" in
                 free)
                     # find out the last partition:
                     # Number  Start   End        Size       File system  Name     Flags
                     #  1      1.05MB  1000205MB  1000204MB               primary
-                    IFS=' ' read -r _ _ end _ <<< "$(parted "$disk" unit MB print | grep "^ [0-9]\+ " | tail -1 | sed 's/MB//g')"
+                    IFS=' ' read -r _ _ end _ <<< "$( \
+                        parted "$disk" unit MB print 2>/dev/null | grep "^ [0-9]\+ " | tail -1 | sed 's/MB//g' \
+                    )"
                     end="${end:-0}"
-                    echo "$((total - end))MB"
+                    echo "$((total - end - 1))MB"
+                    #!! '-1' : gap between partitions !!#
                     ;;
                 total|*)
                     echo "$total"MB
@@ -119,33 +125,48 @@ disk() {
                 shift
             done
 
-            local nsz pno total last free
-            nsz="$(numfmt --from si --to si --format "%.2f" "$sz"M)B"
-            pno="$(parted "$disk" print | grep -c "^ [0-9]\+")" || true
+            local pno
+            pno="$(parted "$disk" print | grep -c "^ [0-9]\+ ")" || true
             pno=$((pno + 1))
-
-            # list last partition
-            IFS=' :' read -r _ _ total <<< "$(parted "$disk" unit 'MB' print | grep "^Disk $disk:" | sed 's/MB//g')"
-            IFS=' ' read -r _ _ last _ <<< "$(parted "$disk" unit MB print | grep "^ [0-9]\+ " | tail -1 | sed 's/MB//g')"
-            local free=$((total - last))
-            if [ -n "$sz" ] && [ "$sz" -gt "$free" ]; then
-                error "$disk: request size($nsz) exceed limit($free)"
-                return 1
-            fi
 
             if test -z "$sz"; then
                 info "$disk: create single partition"
                 # erase all partition(s) and create a new one
                 echo yes | disk "$disk" gpt > /dev/null
                 echocmd parted -s --fix "$disk" mkpart "part$pno" "$fs" "2048s" 100%
-            elif [ -z "$last" ]; then
-                info "$disk: create a $nsz partition"
-                echocmd parted -s --fix "$disk" mkpart "part$pno" "$fs" "2048s" "$sz"MB
             else
+                local nsz total start end
+                # Disk /dev/sdd: 1000205MB
+                IFS=' :' read -r _ _ total <<< "$( \
+                    parted "$disk" unit 'MB' print | grep "^Disk $disk:" | sed 's/MB//g' \
+                )"
+                # Number  Start   End        Size       File system  Name   Flags
+                #  1      1.05MB  1000205MB  1000204MB               part1
+                IFS=' ' read -r _ _ start _ <<< "$( \
+                    parted "$disk" unit MB print | grep "^ [0-9]\+ " | tail -1 | sed 's/MB//g' \
+                )"
+
+                nsz="$(numfmt --from si --to si --format "%.2f" "$sz"M)B" || true
                 info "$disk: append a $nsz partition"
+                if [ "$((start + sz))" -gt "$total" ]; then
+                    error "$disk: request size($nsz) exceed limit($free)"
+                    return 1
+                fi
+
                 # put ~1M free space between partitions
-                echocmd parted -s --fix "$disk" unit MB mkpart "part$pno" "$fs" "$((last + 1))" "$((last + sz))"
-                #                                                                                  ^ no +1 here, otherwise it will exceed limit
+                if [ -n "$start" ]; then
+                    start=$((start + 1))
+                    end=$((start + 1 + sz))
+                else
+                    # parted has trouble to align the first partition
+                    start="2048s" # ~1M
+                    end=$((1 + sz))
+                fi
+                # double check
+                if [ "$end" -gt "$total" ]; then
+                    end="$total"
+                fi
+                echocmd parted -s --fix "$disk" unit MB mkpart "part$pno" "$fs" "$start" "$end"
             fi
 
             echocmd partprobe "$disk" || true
@@ -166,7 +187,7 @@ disk() {
             ;;
         delete)
             info "delete $disk from kernel"
-            read -r -p "Dangerous, are you sure to delete $disk? [y/N]" ans
+            read -r -p "** Dangerous, are you sure to delete $disk? [y/N]" ans
             ans_is_true ans || return 1
 
             echo 1 > "/sys/block/$(basename "$disk")/device/delete"
@@ -182,6 +203,8 @@ disk() {
                     return 1
                     ;;
             esac
+            ;;
+        add)
             ;;
         *)
             disk_help
@@ -248,17 +271,25 @@ EOF
         test)
             echocmd mdadm --detail --test "$mddev"
             ;;
+        devices)
+            local mdpartcnt
+            mdpartcnt="$(mdadm --detail "$mddev" | grep 'Raid Devices : ' | awk -F':' '{print $2}')"
+            mdadm --detail "$mddev" | tail -n"$mdpartcnt" | awk '{print $7}'
+            ;;
         size) # <total|parts>, default: total
+            local mdsz mdpart
             case "$1" in
                 part*)
-                    # Used Dev Size : 976629248 (931.39 GiB 1000.07 GB)
-                    IFS='()' read -r _ size _ <<< "$(mdadm --detail "$mddev" | grep 'Used Dev Size :')"
-                    echo "$size" | awk '{print $3$4}' # takes 1000 base
+                    #!! mdadm report part size != real disk part size !!#
+                    IFS=' ' read -r _ _ _ _ _ _ mdpart <<< "$( \
+                        mdadm --detail "$mddev" | grep 'active sync' | tail -1 \
+                    )"
+                    disk "$mdpart" size
                     ;;
                 total|*)
                     # Array Size : 2929887744 (2.73 TiB 3.00 TB)
-                    IFS='()' read -r _ size _ <<< "$(mdadm --detail "$mddev" | grep 'Array Size :')"
-                    echo "$size" | awk '{print $3$4}' # takes 1000 base
+                    IFS='()' read -r _ mdsz _ <<< "$(mdadm --detail "$mddev" | grep 'Array Size :')"
+                    echo "$mdsz" | awk '{print $3$4}' # takes 1000 base
                     ;;
             esac
             ;;
@@ -295,31 +326,6 @@ EOF
                 --raid-devices="$#"  \
                 "$@"
             ;;
-        spare) # spare <partition>
-            # TODO
-            ;;
-        add) # add <partitions ...>
-            # replace failed parts if degraded, otherwise grow raid
-            if ! mdadm --detail --test "$mddev" &>/dev/null; then
-                info "$mddev: degraded"
-                echocmd mdadm --action "idle" "$mddev"
-
-                # remove failed devices
-                while read -r line; do
-                    IFS=' ' read -r _ _ _ _ a b _ <<< "$line"
-                    echocmd mdadm --manage "$mddev" --fail "$b" --remove "$b" --force
-                done < <(mdadm --detail "$mddev" | grep "faulty")
-
-                # remove detached devices
-                echocmd mdadm "$mddev" --fail detached --remove detached
-                # add new devices
-                echocmd mdadm --manage "$mddev" --add "$@"
-                # check
-                echocmd mdadm --action "check" "$mddev"
-            else
-                warn "TODO: grow raid with $*"
-            fi
-            ;;
         stop)
             info "stopping $mddev, it can be assembled again"
             echocmd mdadm --action "idle" "$mddev" || true
@@ -329,7 +335,7 @@ EOF
             ;;
         destroy) # !!! Dangerous !!!
             warn "destroying $mddev, it cann't be assembled again"
-            read -r -p "Dangerous, are you sure to continue? [y/N]" ans
+            read -r -p "** Dangerous, are you sure to continue? [y/N]" ans
             ans="${ans:-N}"
             ans_is_true "$ans" || return 1
 
@@ -346,6 +352,29 @@ EOF
             for x in "${parts[@]}"; do
                 echocmd mdadm --zero-superblock "$x"
             done
+            ;;
+        add) # add [grow] <partitions ...>
+            echocmd mdadm --action "idle" "$mddev"
+
+            # remove failed parts
+            if ! mdadm --detail --test "$mddev" >/dev/null; then
+                warn "$mddev: degraded, remove failed device(s)"
+
+                # remove failed devices
+                while read -r line; do
+                    IFS=' ' read -r _ _ _ _ _ b _ <<< "$line"
+                    echocmd mdadm --manage "$mddev" --fail "$b" --remove "$b" --force
+                done < <(mdadm --detail "$mddev" | grep "faulty")
+
+                # remove detached devices
+                echocmd mdadm "$mddev" --fail detached --remove detached
+                # add new devices
+                echocmd mdadm --manage "$mddev" --add "$@"
+            else
+                echocmd mdadm --manage "$mddev" --add-spare "$@"
+            fi
+            # check: 'Device or resource busy'?
+            echocmd mdadm --action "check" "$mddev" || true
             ;;
         remove) #
             ;;
@@ -414,10 +443,14 @@ volume() {
     # volume <name> <command> [options]
     local lvname="$1"; shift
     local command="$1"; shift
-    local vgname
 
-    # get vgname based on lvname
-    IFS=' ' read -r vgname <<< "$(lvs --noheadings -S lvname="$lvname" -o vg_name)"
+    local vgname lvtype lvsize
+
+    # get lvname,vgname
+    lvname="$(basename "$lvname")"
+    IFS=' ' read -r vgname <<< "$( \
+        lvs --noheadings -S lvname="$lvname" -o vg_name \
+        )"
     case "$command" in
         status)
             echocmd vgdisplay --verbose "$vgname" -S lvname="$lvname"
@@ -426,8 +459,8 @@ volume() {
             echo "/dev/$vgname/$lvname"
             ;;
         size)
-            IFS=' <' read -r _ _ _ size <<< "$(lvs --noheadings -S lvname="$lvname")"
-            numfmt --from auto --to si --format="%.2f" "${size^^}i"
+            IFS=' <' read -r _ _ _ lvsize <<< "$(lvs --noheadings -S lvname="$lvname")"
+            numfmt --from auto --to si --format="%.2f" "${lvsize^^}i"
             ;;
         devices)
             pvs --noheadings -S vgname="$vgname" -o pv_name | xargs
@@ -437,8 +470,6 @@ volume() {
                 error "volume $lvname already exists"
                 return 1
             fi
-
-            local lvtype lvsize
 
             lvtype="linear"
             case "$1" in
@@ -463,14 +494,14 @@ volume() {
                     vgname="$_vg"
                 fi
                 if [ "$_vg" != "$vgname" ]; then
-                    error "expected group $vgname, but $_pv belongs to $_vg"
+                    error "$_pv belongs to group $_vg, expected $vgname"
                     return 1
                 fi
             done
 
             if [ -z "$vgname" ]; then
+                vgname="$(block_device_next /dev/vg)"
                 echocmd pvcreate --verbose "$@" || true
-                vgname="$(next_node "/dev/vg")"
                 echocmd vgcreate --verbose "$vgname" "$@"
             fi
 
@@ -500,7 +531,7 @@ volume() {
             local devfs="/dev/$vgname/$lvname"
 
             # umount volume
-            umount "$devfs" || true
+            echocmd umount "$devfs" || true
 
             # remove lv0
             echocmd lvremove --verbose --yes "$devfs"
@@ -550,6 +581,36 @@ hybrid() {
     local command="$1"; shift
 
     case "$command" in
+        devices)
+            local name size type misc
+            local OPTS="NAME,SIZE,TYPE,FSTYPE"
+            IFS=' ' read -r name size type misc <<< "$(                    \
+                lsblk -o "$OPTS" "$(volume "$LVNAME" devfs)" | sed -n '2p' \
+            )"
+            printf "%-14s %7s %7s %s\n" "NAME" "SIZE" "TYPE" "MISC"
+            printf "%-14s %7s %7s %s\n" "$name" "$size" "$type" "$misc"
+            for pv in $(volume "$LVNAME" devices); do
+                IFS=' ' read -r name size type misc <<< "$( \
+                    lsblk -o "$OPTS" "$pv" | sed -n '2p'    \
+                )"
+                printf "├─%-12s %7s %7s %s\n" "$name" "$size" "$type" "$misc"
+                for part in $(raid "$pv" devices); do
+                    IFS=' ' read -r name size type misc <<< "$( \
+                        lsblk -o "$OPTS" "$part" | sed -n '2p'  \
+                    )"
+                    printf "│ ├─%-10s %7s %7s %s\n" "$name" "$size" "$type" "$misc"
+                done
+            done
+            ;;
+        destroy)
+            info "destroy $LVNAME"
+            IFS=' ' read -r -a mddevs <<< "$(volume "$LVNAME" devices)"
+            volume "$LVNAME" destroy
+            for mddev in "${mddevs[@]}"; do
+                info "destroy $mddev"
+                echo yes | raid "$mddev" destroy
+            done
+            ;;
         create)
             IFS=' ' read -r -a DEVICES <<< "$@"
 
@@ -600,7 +661,7 @@ hybrid() {
                 done
 
                 # create raid
-                local MDDEV="$(next_node /dev/md)"
+                local MDDEV="$(block_device_next /dev/md)"
                 raid "$MDDEV" create auto "${MDPARTS[@]}" || true
 
                 # !! recreate raid may end with unexpected devfs !!
@@ -618,6 +679,8 @@ EOF
                 DEVICES=("${MDDEVICES[@]}")
             done
 
+            sleep 3
+
             # create volume
             volume "$LVNAME" create "${PVDEVICES[@]}"
 
@@ -627,7 +690,10 @@ EOF
             #disk "$devfs" init
             #disk "$devfs" part ext4
             ;;
-        part) # part ext4 [size]
+        mkfs) # mkfs [btrfs]
+            local fs="$1"
+            fs="${fs:-btrfs}"
+            disk "$(volume "$LVNAME" devfs)" mkfs "$fs"
             ;;
         *)
             hybrid_help
@@ -640,7 +706,7 @@ examples() {
     cat << EOF
 # disk examples
 $name disk info                         # show all disks informations
-$name disk /dev/sda info                # show /dev/sda informations
+$name disk /dev/sda status              # show /dev/sda status
 $name disk /dev/sda init                # init disk with a gpt partition table
 $name disk /dev/sda part 10G            # create a new 10G partition
 

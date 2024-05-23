@@ -5,3 +5,4 @@
 * [conntrack.sh](conntrack.sh) - [A pretty network connection track script]().
 * [photoi.sh](photoi.sh) - [A photo import and organize script]().
 * [dperf.sh](dperf.sh) - Disk Performance Test.
+* [Hraidctl.sh](Hraidctl.sh) - Hybrid raid control script.

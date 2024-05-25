@@ -548,7 +548,8 @@ volume() {
         mount) # mount [dir], if no dir, return current mount point
             if [ $# -gt 0 ]; then
                 umount "$LVDEV" &>/dev/null || true
-                sed -i ":^$LVDEV.*$:d;\$a $LVDEV $1 auto defaults,nofail 0 0" /etc/fstab
+                sed -i "\|^$LVDEV|d" /etc/fstab
+                echo "$LVDEV $1 auto defaults,nofail 0 0" >> /etc/fstab
                 mkdir -pv "$1"
                 which systemctl &>/dev/null && systemctl daemon-reload || true
                 mount "$1"

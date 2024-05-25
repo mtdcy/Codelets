@@ -224,11 +224,11 @@ EOF
                 fi
 
                 # ugly code to get partition devfs path
-                local devfs="$DISK$pno"
+                local part="$DISK$pno"
 
-                info "$DISK: mkfs.$fs @ $devfs"
-                echocmd wipefs --force "$devfs"
-                echocmd mkfs -t "$fs" "$devfs"
+                info "$DISK: mkfs.$fs @ $part"
+                echocmd wipefs --force "$part"
+                echocmd mkfs -t "$fs" "$part"
             fi
             ;;
         delete)
@@ -505,6 +505,7 @@ Commands and parameters:
 EOF
 }
 
+# volume /dev/vg0/lv0 <command> ...
 volume() {
     # top level: volume <command>
     case "$1" in
@@ -521,32 +522,22 @@ volume() {
     esac
 
     # volume <name> <command> [options]
-    local LVNAME="$1"; shift
+    local LVDEV="$1"; shift
     local command="$1"; shift
 
-    local VGNAME LVTYPE LVSIZE
-
-    # get LVNAME,VGNAME
-    LVNAME="$(basename "$LVNAME")"
-    IFS=' ' read -r VGNAME <<< "$( \
-        lvs --noheadings -S lvname="$LVNAME" -o vg_name \
-    )"
-    # => test VGNAME in case later
-
-    LVDEV="/dev/$VGNAME/$LVNAME"
+    # test LVDEV
     if [ "$command" != "create" ] && [ ! -b "$LVDEV" ] ; then
         error "$command $*: device not exists"
         return 1
     fi
 
+    local LVNAME VGNAME LVTYPE LVSIZE
+    IFS='/' read -r _ _ VGNAME LVNAME <<< "$LVDEV"
+
     case "$command" in
         status)
             [ -b "$LVDEV" ] || return 1
             echocmd vgdisplay --verbose "$VGNAME" -S lvname="$LVNAME"
-            ;;
-        devfs)
-            [ -b "$LVDEV" ] || return 1
-            echo "$LVDEV"
             ;;
         size)
             [ -b "$LVDEV" ] || return 0 #
@@ -569,8 +560,8 @@ volume() {
             pvs --noheadings -S vgname="$VGNAME" -o pv_name | xargs
             ;;
         create) # create [linear|stripe|thin] [size] <pv devices ...>
-            if [ "$(lvs --noheadings -S lvname="$LVNAME" | wc -l)" -ne 0 ]; then
-                error "volume $LVNAME already exists"
+            if [ -b "$LVDEV" ]; then
+                error "$LVDEV: volume already exists"
                 return 1
             fi
 
@@ -583,27 +574,23 @@ volume() {
                     LVTYPE="thin-pool"; shift
                     ;;
             esac
+            info "$LVDEV: create $LVTYPE volume with $*"
 
             if par_is_size "$1"; then
                 LVSIZE="$1"; shift
             fi
 
             # pv check: all devices must belong to the same group
-            VGNAME=""
             for _pv in "$@"; do
                 local _vg
-                _vg="$(pvs --noheadings -o vg_name "$_pv")" || true
-                if [ -z "$vganme" ]; then
-                    VGNAME="$_vg"
-                fi
-                if [ "$_vg" != "$VGNAME" ]; then
+                IFS=' ' read -r _vg <<< "$(pvs --noheadings -o vg_name "$_pv")" || true
+                if [ -n "$_vg" ] && [ "$_vg" != "$VGNAME" ]; then
                     error "$_pv belongs to group $_vg, expected $VGNAME"
                     return 1
                 fi
             done
 
-            if [ -z "$VGNAME" ]; then
-                VGNAME="$(block_device_next /dev/vg)"
+            if ! lvs "$VGNAME" > /dev/null; then
                 echocmd pvcreate --verbose "$@" || true
                 echocmd vgcreate --verbose "$VGNAME" "$@"
             fi
@@ -696,7 +683,7 @@ Commands and parameters:
 EOF
 }
 
-# hybrid <name> create /dev/sda /dev/sdb ...
+# hybrid /dev/Hg0/H0 create /dev/sda /dev/sdb ...
 hybrid() {
     # top level:
     case "$1" in
@@ -708,7 +695,7 @@ hybrid() {
             for LVNAME in $(lvs --noheadings -o lv_name | xargs); do
                 # ls logical volume
                 IFS=' ' read -r name size type misc <<< "$(                    \
-                    lsblk -o "$OPTS" "$(volume "$LVNAME" devfs)" | sed -n '2p' \
+                    lsblk -o "$OPTS" /dev/*/"$LVNAME" | sed -n '2p' \
                 )"
                 printf "%-14s %7s %7s %s\n" "$name" "$size" "$type" "$misc"
                 for pv in $(volume "$LVNAME" devices); do
@@ -739,19 +726,27 @@ hybrid() {
             ;;
     esac
 
-    local LVNAME="$1"; shift
+    local HDEV="$1"; shift
     local command="$1"; shift
+
+    local Hg H
+
+    IFS='/' read -r _ _ Hg H <<< "$HDEV"
+    if [ -z "$Hg" ] || [ -z "$H" ]; then
+        error "$HDEV: bad devfs, expected /dev/Hg0/H0"
+        return 1
+    fi
 
     case "$command" in
         status)
-            echo "    --- $(volume "$LVNAME" devfs) ($(volume "$LVNAME" mount)) ---"
-            printf "%14s : %s\n" "Total Size"   "$(volume "$LVNAME" size)"
-            printf "%14s : %s\n" "Free Size"    "$(volume "$LVNAME" size free)"
-            printf "%14s : %s\n" "File System"  "$(disk "$(volume "$LVNAME" devfs)" fstype)"
+            echo "    --- $HDEV ($(volume "$HDEV" mount)) ---"
+            printf "%14s : %s\n" "Total Size"   "$(volume "$HDEV" size)"
+            printf "%14s : %s\n" "Free Size"    "$(volume "$HDEV" size free)"
+            printf "%14s : %s\n" "File System"  "$(disk "$HDEV" fstype)"
 
             echo -e "\n    --- devices ---"
             local devices size free
-            for dev in $(hybrid "$LVNAME" devices); do
+            for dev in $(hybrid "$HDEV" devices); do
                 size="$(disk "$dev" size)"
                 free="$(disk "$dev" size free)"
                 printf "%14s : %s" "$dev" "$(numfmt --from iec --to iec "${size%B}")B"
@@ -762,11 +757,11 @@ hybrid() {
             done
             ;;
         size) # size [total|free], default: total
-            volume "$LVNAME" size "$@"
+            volume "$HDEV" size "$@"
             ;;
         devices)
             local devices=()
-            for mddev in $(volume "$LVNAME" devices); do
+            for mddev in $(volume "$HDEV" devices); do
                 local parts
                 read -r -a parts <<< "$(raid "$mddev" devices)"
                 devices+=("${parts[@]}")
@@ -777,12 +772,12 @@ hybrid() {
                 sort -u | xargs
             ;;
         mount) # mount [mountpint], if no mountpint specified, return current one
-            volume "$LVNAME" mount "$@"
+            volume "$HDEV" mount "$@"
             ;;
         destroy)
-            info "destroy $LVNAME"
-            IFS=' ' read -r -a mddevs <<< "$(volume "$LVNAME" devices)"
-            volume "$LVNAME" destroy
+            info "destroy $HDEV"
+            IFS=' ' read -r -a mddevs <<< "$(volume "$HDEV" devices)"
+            volume "$HDEV" destroy
             for mddev in "${mddevs[@]}"; do
                 info "destroy $mddev"
                 echo yes | raid "$mddev" destroy
@@ -799,7 +794,7 @@ hybrid() {
                 esac
             done
 
-            info "$LVNAME: create volume($FSTYPE) with devices ${DEVICES[*]}"
+            info "$HDEV: create volume($FSTYPE) with devices ${DEVICES[*]}"
             read -r -p "The disks will be wipe out, continue? [y/N] " ans
             ans=${ans:-N}
             ans_is_true "$ans" || return 1
@@ -869,17 +864,17 @@ EOF
             sleep 3
 
             # create volume
-            volume "$LVNAME" create linear "${PVDEVICES[@]}"
+            volume "$HDEV" create "${PVDEVICES[@]}"
 
             if [ -n "$FSTYPE" ]; then
-                disk "$(volume "$LVNAME" devfs)" mkfs "$FSTYPE"
+                disk "$HDEV" mkfs "$FSTYPE"
             fi
             ;;
         add) # add <devices ...>
             local DEVICES
             IFS=' ' read -r -a DEVICES <<< "$@"
 
-            info "$LVNAME: add devices ${DEVICES[*]}"
+            info "$HDEV: add devices ${DEVICES[*]}"
             read -r -p "The disks will be wipe out, continue? [y/N] " ans
             ans=${ans:-N}
             ans_is_true "$ans" || return 1
@@ -894,7 +889,7 @@ EOF
 
             MDINDEX=0
             MDPARTS=()
-            for MDDEV in $(volume "$LVNAME" devices); do
+            for MDDEV in $(volume "$HDEV" devices); do
 
                 MDPARTSIZE="$(raid "$MDDEV" size part)"
 
@@ -908,22 +903,22 @@ EOF
                     PART="$disk$((MDINDEX + 1))"
 
                     # create new partition
-                    info "$LVNAME: create $PART for $MDDEV"
+                    info "$HDEV: create $PART for $MDDEV"
                     disk "$disk" part "$MDPARTSIZE"
                     MDPARTS+=("$PART")
                 done
 
                 # add the partition to raid
-                info "$LVNAME: add ${MDPARTS[*]} to $MDDEV"
+                info "$HDEV: add ${MDPARTS[*]} to $MDDEV"
                 raid "$MDDEV" add "${MDPARTS[*]}"
 
                 MDINDEX=$((MDINDEX + 1))
             done
 
-            info "$LVNAME: enough spaces to create new raid?"
+            info "$HDEV: enough spaces to create new raid?"
 
             MDPARTSIZE=
-            for disk in $(hybrid "$LVNAME" devices); do
+            for disk in $(hybrid "$HDEV" devices); do
                 FREE="$(disk "$disk" size free)"
                 FREE="${FREE%[KMGTP]B}"
                 if [ "$FREE" -lt 128 ]; then
@@ -937,7 +932,7 @@ EOF
             done
 
             if [ "${#MDDEVICES[@]}" -lt 2 ]; then
-                info "$LVNAME: no more device spaces"
+                info "$HDEV: no more device spaces"
                 return 0
             fi
 
@@ -955,7 +950,7 @@ EOF
             raid "$MDDEV" create auto "${MDPARTS[@]}"
 
             # add pv to lv
-            volume "$LVNAME" add "$MDDEV"
+            volume "$HDEV" add "$MDDEV"
             ;;
         *)
             hybrid_help

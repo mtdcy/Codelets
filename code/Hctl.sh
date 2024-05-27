@@ -452,33 +452,40 @@ EOF
 
             echocmd mdadm --action "idle" "$MDDEV"
 
-            local MDDEVCNT
-            MDDEVCNT="$(mdadm --detail "$MDDEV" | grep -F 'Raid Devices :' | awk -F':' '{print $2}')"
+            local mdcnt total final
+            mdcnt="$(mdadm --detail "$MDDEV" | grep -F 'Raid Devices :' | awk -F':' '{print $NF}')"
+            total="$(mdadm --detail "$MDDEV" | grep -F 'Total Devices :' | awk -F':' '{print $NF}')"
 
             # remove failed parts
             if ! mdadm --detail --test "$MDDEV" >/dev/null; then
                 warn "$MDDEV: degraded, remove failed device(s)"
 
                 # remove failed devices
-                while read -r line; do
-                    IFS=' ' read -r _ _ _ _ _ b _ <<< "$line"
-                    echocmd mdadm --manage "$MDDEV" --fail "$b" --remove "$b" --force
-                done < <(mdadm --detail "$MDDEV" | grep "faulty")
+                while read -r part; do
+                    info "$MDDEV: remove faulty $part"
+                    echocmd mdadm --manage "$MDDEV" --fail "$part" --remove "$part" --force
+                done < <(mdadm --detail "$MDDEV" | grep "faulty" | awk '{print $NF}')
 
                 # remove detached devices
                 echocmd mdadm "$MDDEV" --fail detached --remove detached
-                # add new devices
             fi
+
             # add devices as hot spare
             echocmd mdadm --manage "$MDDEV" --add "$@"
 
             # grow if not add as spare
-            if test -z "$spare"; then
-                echocmd mdadm --grow "$MDDEV" --raid-devices="$((MDDEVCNT + $#))"
+            if ! [ "$spare" = "true" ]; then
+                final="$(mdadm --detail "$MDDEV" | grep -F 'Total Devices :' | awk -F':' '{print $NF}')"
+                if [ "$final" -gt "$mdcnt" ]; then
+                    #!! grow with new added devices only !!#
+                    echocmd mdadm --action "idle" "$MDDEV" || true
+                    echocmd mdadm --grow "$MDDEV" --raid-devices="$((mdcnt + final - total))"
+                fi
             fi
 
+            #!! no force resync here !!#
             # check: 'Device or resource busy'?
-            echocmd mdadm --action "check" "$MDDEV" || true
+            #echocmd mdadm --action "check" "$MDDEV" || true
             ;;
         remove) #
             ;;

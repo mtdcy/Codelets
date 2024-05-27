@@ -95,29 +95,11 @@ block_device_next() {
     done
 }
 
-disk_help() {
-    cat << EOF
-$(basename "$0") disk <command> [parameters]
-$(basename "$0") disk /dev/sda <command> [parameters]
-
-Commands and parameters:
-    status                      : Dump disk informations
-    gpt                         : Create a new GPT partition table
-    part [size]                 : Create a new partion with given size in {K,M,G,T,P} or max
-    sectors <total|free|last>   : Get total(default)/free/last sectors
-    help                        : Show this help messages
-EOF
-}
-
 disk() {
     # Top level: disk <command>
     case "$1" in
         info)
             echocmd lsblk -o +MODEL,SERIAL
-            return
-            ;;
-        help)
-            disk_help
             return
             ;;
     esac
@@ -312,28 +294,10 @@ EOF
             fi
             ;;
         *)
-            disk_help
+            error "unknown command $command"
+            return 1
             ;;
     esac
-}
-
-raid_help() {
-    cat << EOF
-$(basename "$0") raid <command> [parameters]
-$(basename "$0") raid /dev/md0 <command> [parameters]
-
-Commands and parameters:
-    info                                : Print all raid devices informations
-    create [raid1] /dev/sda1 /dev/sdb1  : Create a new raid device with given partitions
-    add /dev/sde1                       : Add or replace failure device with given partition(s)
-                                        : Expand the raid with given partition(s).
-    destroy                             : Destroy the raid device
-    check <start|stop|status>           : Start or stop raid check, or get its status
-    help                                : Show this help message
-
-Supported levels: raid0 raid1 raid5 raid6 raid10, auto
-
-EOF
 }
 
 raid() {
@@ -365,10 +329,6 @@ $(mdadm --detail --scan)
 EOF
             # fix md0 been reanemd to md127 after reboot
             update-initramfs -u
-            ;;
-        help)
-            raid_help
-            return
             ;;
     esac
 
@@ -545,23 +505,11 @@ EOF
                     ;;
             esac
             ;;
-        help|*)
-            raid_help
+        *)
+            error "unknown command $command"
+            return 1
             ;;
     esac
-}
-
-volume_help() {
-    cat << EOF
-$(basename "$0") volume <command> [parameters]
-$(basename "$0") volume lv0 <command> [parameters]
-
-Commands and parameters:
-    info                        : Print all|volume informations
-    create /dev/md0 /dev/md1    : Create a new volume with given devices
-    destroy                     : Destroy the given volume
-    help                        : Print this help message
-EOF
 }
 
 # volume /dev/vg0/lv0 <command> ...
@@ -572,10 +520,6 @@ volume() {
             echocmd lvs
             echocmd vgs
             echocmd pvs
-            return
-            ;;
-        help)
-            volume_help
             return
             ;;
     esac
@@ -726,20 +670,11 @@ volume() {
                     ;;
                 esac
             ;;
-        help|*)
+        *)
             error "unknown command $command"
-            volume_help
+            return 1
             ;;
     esac
-}
-
-hybrid_help() {
-    cat << EOF
-$(basename "$0") hybrid volume0 <command> [parameters]
-
-Commands and parameters:
-    create /dev/sda /dev/sdb            : Create a hybrid volume
-EOF
 }
 
 # hybrid /dev/Hg0/H0 create /dev/sda /dev/sdb ...
@@ -771,10 +706,6 @@ hybrid() {
                     done
                 done
             done
-            ;;
-        help)
-            hybrid_help
-            return
             ;;
     esac
 
@@ -1019,51 +950,54 @@ EOF
             echofunc volume "$HDEV" add "$MDDEV"
             ;;
         *)
-            hybrid_help
+            error "unknown command $command"
+            return 1
             ;;
     esac
 }
 
 examples() {
-    local name="$(basename "$0")"
     cat << EOF
 -- disk examples --
-$name disk info                                     # show all disks informations
-$name disk /dev/sda status                          # show /dev/sda status
-$name disk /dev/sda gpt                             # create a gpt partition table
-$name disk /dev/sda create 10G                      # create a new 10G partition
+$NAME disk info                                     # show all disks informations
+$NAME disk /dev/sda status                          # show /dev/sda status
+$NAME disk /dev/sda gpt                             # create a gpt partition table
+$NAME disk /dev/sda create 10G                      # create a new 10G partition
+$NAME disk /dev/sda size free                       # get disk free space size
 
 -- raid examples --
-$name raid ls                                       # list all raid devices
-$name raid info                                     # show all raid devices info
-$name raid /dev/md0 create auto /dev/sd[a-d]1       # create a new raid device
-$name raid /dev/md0 add /dev/sde1                   # add partition to existing raid device
-$name raid /dev/md0 destroy                         # destroy a raid device
+$NAME raid ls                                       # list all raid devices
+$NAME raid info                                     # show all raid devices info
+$NAME raid /dev/md0 create auto /dev/sd[a-d]1       # create a new raid device
+$NAME raid /dev/md0 add /dev/sde1                   # add partition(s) to existing raid device
+$NAME raid /dev/md0 destroy                         # destroy an existing raid device
+$NAME raid /dev/md0 size part                       # get raid device's partition size
 
 -- volume examples --
-$name volume info                                   # show all logical volume info
-$name volume /dev/vg0/volume0 create /dev/md[12]    # create a new logical volume
-$name volume /dev/vg0/volume0 add /dev/md3          # add new device(s) to existing logical volume
-$name volume /dev/vg0/volume0 destroy               # destroy an existing logical volume
+$NAME volume info                                   # show all logical volume info
+$NAME volume /dev/vg0/volume0 create /dev/md[12]    # create a new logical volume
+$NAME volume /dev/vg0/volume0 add /dev/md3          # add new device(s) to existing logical volume
+$NAME volume /dev/vg0/volume0 destroy               # destroy an existing logical volume
+$NAME volume /dev/vg0/volume0 size free             # get logical volume's free space size
 
 -- hybrid volume examples --
-$name ls                                            # list all hybrid volumes
-$name /dev/vg0/volume0 create btrfs /dev/sd[a-z]    # create new hybrid volume on devices
-$name /dev/vg0/volume0 add /dev/sde                 # add new device(s) to existing hybrid volume
-$name /dev/vg0/volume0 status                       # check hybrid volume status
-$name /dev/vg0/volume0 mount /services              # mount a hybrid volume
-$name /dev/vg0/volume0 destroy                      # destroy a hybrid volume
+$NAME ls                                            # list all hybrid volumes
+$NAME /dev/vg0/volume0 create btrfs /dev/sd[a-z]    # create new hybrid volume on devices
+$NAME /dev/vg0/volume0 add /dev/sde                 # add new device(s) to existing hybrid volume
+$NAME /dev/vg0/volume0 status                       # check hybrid volume status
+$NAME /dev/vg0/volume0 mount /services              # mount a hybrid volume
+$NAME /dev/vg0/volume0 destroy                      # destroy a hybrid volume
 EOF
 }
 
 case "$1" in
     hybrid|volume|raid|disk)
-        "$@"
+        echofunc "$@"
         ;;
     examples)
         examples
         ;;
     *)
-        hybrid "$@"
+        echofunc hybrid "$@"
         ;;
 esac

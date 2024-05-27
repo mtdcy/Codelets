@@ -22,6 +22,22 @@ error() { echo -e "** \\033[31m$*\\033[39m"; }
 info()  { echo -e "** \\033[32m$*\\033[39m"; }
 warn()  { echo -e "** \\033[33m$*\\033[39m"; }
 
+# prompt text <true|false> ans
+prompt() {
+    local ans="$3"
+    echo -en "** \\033[32m$1\\033[39m"
+    if [ -n "$2" ]; then
+        case "$2" in
+            y|yes|true)
+                echo -en " [Y/n]"
+                ;;
+            *)
+                echo -en " [y/N]"
+                ;;
+        esac
+    fi
+}
+
 echocmd() {
     local cmd="${*//[[:space:]]+/ }"
     echo -e "--\\033[34m $cmd \\033[39m"
@@ -255,11 +271,17 @@ EOF
             fi
             ;;
         delete)
-            info "$DISK: delete from kernel"
-            read -r -p "** Dangerous, are you sure to delete $DISK? [y/N]" ans
-            ans_is_true ans || return 1
+            prompt "$DISK: delete from kernel?" false
+            read -r ans
+            ans_is_true "$ans" || return 1
 
+            local scsi
+            scsi="$(readlink -f "/sys/block/$DISKNAME")"
+            scsi="$(realpath "$scsi/../../../../")"
+            echo offline > "/sys/block/$DISKNAME/device/state"
             echo 1 > "/sys/block/$DISKNAME/device/delete"
+
+            info "$DISK: add with \`echo '- - -' > $(find "$scsi" -name scan -type f)'"
             ;;
         fstype)
             if [ "$DISKTYPE" = "disk" ]; then
@@ -346,6 +368,7 @@ EOF
     # raid <mddev> <command> [parameters]
     local MDDEV="$1"; shift
     local command="$1"; shift
+
     case "$command" in
         status) # status
             [ -b "$MDDEV" ] || return 1

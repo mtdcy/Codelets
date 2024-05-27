@@ -12,19 +12,26 @@ VERSION=0.1
 
 set -eo pipefail
 
-error() { echo -e "== \\033[31m$*\\033[39m =="; }
-info()  { echo -e "== \\033[32m$*\\033[39m =="; }
-warn()  { echo -e "== \\033[33m$*\\033[39m =="; }
-
 headings() {
     cat << EOF
 $NAME $VERSION (c) Chen Fang 2024, mtdcy.chen@gmail.com
 EOF
 }
 
+error() { echo -e "** \\033[31m$*\\033[39m"; }
+info()  { echo -e "** \\033[32m$*\\033[39m"; }
+warn()  { echo -e "** \\033[33m$*\\033[39m"; }
+
 echocmd() {
     local cmd="${*//[[:space:]]+/ }"
-    echo -e "==\\033[34m cmd: $cmd \\033[39m=="
+    echo -e "--\\033[34m $cmd \\033[39m"
+    eval -- "$cmd"
+}
+
+# echo internal functions, just with different color
+echofunc() {
+    local cmd="${*//[[:space:]]+/ }"
+    echo -e "\n==\\033[35m $cmd \\033[39m"
     eval -- "$cmd"
 }
 
@@ -35,6 +42,21 @@ ans_is_true() {
 
 par_is_size() {
     [[ "${1^^}" =~ ^[0-9\.]+[KMGTP]?I?B?$ ]]
+}
+
+# iec to bytes, 1024-based
+part_size() {
+    echo "$(numfmt --from iec "${1%B}")B"
+}
+
+# iec to {KMGTP}B, 1024-based
+IEC_size() {
+    echo "$(numfmt --from iec --to iec "${1%B}")B"
+}
+
+# 1024-based MB
+MegaBytes() {
+    echo "$(($(numfmt --from iec "${1%B}") / 1048576))MB"
 }
 
 # $0 <prefix>
@@ -105,14 +127,21 @@ disk() {
             echocmd lsblk "$DISK"
             ;;
         devices) # return partitions
-            local parts
-            parts=($(parted "$DISK" print | grep " [0-9]\+ " | awk '{ print  $1}' | xargs))
+            local parts=()
+            while IFS='' read -r line; do
+                parts+=("$line")
+            done < <(parted "$DISK" print | grep " [0-9]\+ " | awk '{ print  $1}')
             echo "${parts[@]/#/$DISK}"
+            ;;
+        type)
+            echo "$DISKTYPE"
             ;;
         size) # size [total|free], default: total, return in MB
             #!! 'size free' on partition is undefined       !!#
             local total end
-            total=$(parted "$DISK" unit B print | grep "^Disk $DISK:" | awk -F':' '{print $2}')
+            # suppress 'unrecognised disk label' for part
+            total=$(parted "$DISK" unit B print 2>/dev/null \
+                | grep "^Disk $DISK:" | awk -F':' '{print $2}')
             total="$(numfmt --from si "${total%B}")"
             case "$1" in
                 free)
@@ -121,20 +150,22 @@ disk() {
                     #  1      1.05MB  1000205MB  1000204MB               primary
                     end=$(parted "$DISK" unit B print 2>/dev/null | grep "^ [0-9]\+ " | tail -1 | awk '{print $3}') || true
                     end=${end:-0}
-                    echo "$(((total - ${end%B}) / 1048576))MB"
+                    part_size "$((total - ${end%B}))"
                     ;;
                 total|*)
-                    echo "$((total / 1048576))"MB
+                    part_size "$total"
                     ;;
             esac
             ;;
         gpt)
-            info "$DISK: new GPT partition table"
+            #info "$DISK: new GPT partition table"
             read -r -p "It will erase all data from $DISK, continue? [y/N]" ans
             ans=${ans:-N}
             ans_is_true "$ans" || return 1
 
+            # remove signatures
             wipefs --all --force "$DISK" > /dev/null
+            # create new gpt part table
             echocmd parted -s "$DISK" mklabel gpt || {
 cat << EOF
 
@@ -153,7 +184,7 @@ EOF
             # 'You should reboot now before making further changes.'
             partprobe "$DISK" > /dev/null || true
             ;;
-        part) # part [fs] [size], size in [KMGTP]B
+        create) # create [fs] [size], size in [KMGTP]B
             local size fs
             while test -n "$1"; do
                 if par_is_size "$1"; then
@@ -171,64 +202,56 @@ EOF
             if test -z "$size"; then
                 info "$DISK: create single partition"
                 # erase all partition(s) and create a new one
-                echo yes | DISK "$DISK" gpt > /dev/null
+                echo yes | disk "$DISK" gpt > /dev/null
                 echocmd parted -s --fix "$DISK" mkpart "part$pno" "$fs" "2048s" 100%
             else
                 local nsz total start end
                 # DISK /dev/sdd: 1000205MB
-                total=$(parted "$DISK" unit MB print | grep "^Disk $DISK:" | awk -F':' '{print $2}')
+                total=$(parted "$DISK" unit B print | grep "^Disk $DISK:" | awk -F':' '{print $2}')
                 # Number  Start   End        Size       File system  Name   Flags
                 #  1      1.05MB  1000205MB  1000204MB               part1
-                start=$(parted "$DISK" unit MB print | grep "^ [0-9]\+ " | tail -1 | awk '{print $3}') || true
-
-                # natural size
-                size=$(numfmt --from iec "${size%B}")
-                nsz="$(numfmt --to iec "${size}")B"
-
-                #!! everyone use 1024-base, but parted is 1000-based !!#
-                size=$((size / 1000000)) # to 1000-based MB
-                info "$DISK: append a $nsz partition"
+                start=$(parted "$DISK" unit B print | grep "^ [0-9]\+ " | tail -1 | awk '{print $3}') || true
 
                 # remove suffix MB
-                total=${total%MB}
-                start=${start%MB}
+                total=${total%B}
+                start=${start%B}
                 free=$((total - start))
 
+                info "$DISK: append a $(IEC_size "$size") partition"
+
+                #!! everyone use 1024-base, but parted is 1000-based !!#
+                size=$(numfmt --from iec "${size%B}")
+
                 if [ "$((start + size))" -gt "$total" ]; then
-                    error "$DISK: request size($nsz) exceed limit($free)"
+                    error "$DISK: request size($size) exceed limit($free)"
                     return 1
                 fi
 
                 # put ~1M free space between partitions
                 if [ -n "$start" ]; then
-                    start=$((start + 1))
-                    end=$((start + 1 + size))
+                    start=$((((start + 1048575) / 1048576) * 1048576))
+                    end=$((start + size))
                 else
                     # parted has trouble to align the first partition
                     start="2048s" # ~1M
-                    end=$((1 + size))
+                    end=$((1048576 + size))
                 fi
                 # double check on end
-                if [ "$end" -gt "$total" ]; then
-                    end="$total"
+                if [ "$end" -ge "$total" ]; then
+                    end="$((total - 1))"
                 fi
-                echocmd parted -s --fix "$DISK" unit MB mkpart "part$pno" "$fs" "$start" "$end"
+                # align to 1M ?
+                end=$(((end / 1048576) * 1048576))
+
+                echocmd parted -s --fix "$DISK" unit B mkpart "part$pno" "$fs" "$start" "$end"
             fi
 
             echocmd partprobe "$DISK" || true
 
             if [ -n "$fs" ]; then
-                if ! which "mkfs.$fs" &> /dev/null; then
-                    error "$DISK: bad fs $fs or missing mkfs.$fs"
-                    return 1
-                fi
-
                 # ugly code to get partition devfs path
                 local part="$DISK$pno"
-
-                info "$DISK: mkfs.$fs @ $part"
-                echocmd wipefs --force "$part"
-                echocmd mkfs -t "$fs" "$part"
+                disk "$part" mkfs "$fs"
             fi
             ;;
         delete)
@@ -239,26 +262,25 @@ EOF
             echo 1 > "/sys/block/$DISKNAME/device/delete"
             ;;
         fstype)
-            case "$DISKTYPE" in
-                part|lvm)
-                    parted "$DISK" print | grep ' [0-9]\+ ' | awk '{print $5}'
-                    ;;
-                *)
-                    error "$DISK: get fstype on unsupported device type($DISKTYPE)"
-                    return 1
-                    ;;
-            esac
+            if [ "$DISKTYPE" = "disk" ]; then
+                error "$DISK: get fstype on unsupported device type($DISKTYPE)"
+                return 1
+            else
+                parted "$DISK" print | grep ' [0-9]\+ ' | awk '{print $5}'
+            fi
             ;;
         mkfs) # mkfs <fstype>
-            case "$DISKTYPE" in
-                part|lvm)
-                    echocmd mkfs -t "$1" "$DISK"
-                    ;;
-                *)
-                    error "$DISK: mkfs on unsupported device type($DISKTYPE)"
+            if [ "$DISKTYPE" = "part" ]; then
+                error "$DISK: mkfs on unsupported device type($DISKTYPE)"
+                return 1
+            else
+                if ! which "mkfs.$1" &> /dev/null; then
+                    error "$DISK: bad fs $1 or missing mkfs.$1"
                     return 1
-                    ;;
-            esac
+                fi
+
+                echocmd mkfs -t "$1" -q "$DISK"
+            fi
             ;;
         *)
             disk_help
@@ -310,7 +332,7 @@ HOMEHOST <ignore>
 DEVICE partitions
 CREATE owner=root group=disk mode=0660 auto=yes
 MAILADDR root
-$(mdadm --detail --scan --verbose)
+$(mdadm --detail --scan)
 EOF
             # fix md0 been reanemd to md127 after reboot
             update-initramfs -u
@@ -350,14 +372,16 @@ EOF
             case "$1" in
                 part*)
                     # Used Dev Size : 976630464 (931.39 GiB 1000.07 GB)
-                    size=$(mdadm --detail "$MDDEV" | grep 'Used Dev Size :' | awk -F':' '{print $2}' | awk '{print $1}')
+                    # size=$(mdadm --detail "$MDDEV" | grep 'Used Dev Size :' | awk -F':' '{print $2}' | awk '{print $1}')
+                    #!! 'Used Dev Size' < real partition size !!#
+                    disk "$(raid "$MDDEV" devices | awk '{print $1}')" size
                     ;;
                 total|*)
                     # Array Size : 976630464 (931.39 GiB 1000.07 GB)
                     size=$(mdadm --detail "$MDDEV" | grep 'Array Size :' | awk -F':' '{print $2}' | awk '{print $1}')
+                    part_size "$((size * 1024))"
                     ;;
             esac
-            numfmt --from iec --to iec "$size"K
             ;;
         create) # create level <partitions ...>
             local level="$1"; shift
@@ -376,7 +400,7 @@ EOF
                     ;;
             esac
 
-            info "create raid $MDDEV($level) with $*"
+            #info "create raid $MDDEV($level) with $*"
             if [ $# -lt "$mindev" ]; then
                 error "raid($level) requires at least $mindev devices"
                 return 1
@@ -384,7 +408,7 @@ EOF
 
             #echo yes | echocmd mdadm --verbose --create "$MDDEV" --force --level="$level" --raid-devices="$#" "$@"
             echo yes | echocmd mdadm \
-                --verbose            \
+                --quiet              \
                 --create "$MDDEV"    \
                 --force              \
                 --assume-clean       \
@@ -396,8 +420,8 @@ EOF
             info "stopping $MDDEV, it can be assembled again"
             echocmd mdadm --action "idle" "$MDDEV" || true
             umount "$MDDEV" || true
-            echocmd mdadm --verbose --stop "$MDDEV"
-            echocmd mdadm --verbose --remove "$MDDEV" 2> /dev/null || true
+            echocmd mdadm --stop "$MDDEV"
+            echocmd mdadm --remove "$MDDEV" 2> /dev/null || true
             ;;
         destroy) # !!! Dangerous !!!
             warn "destroying $MDDEV, it cann't be assembled again"
@@ -411,8 +435,8 @@ EOF
 
             IFS=' ' read -r -a parts <<< "$(mdadm --detail "$MDDEV" | sed -n 's@^ .*\(/dev/.*\)$@\1@p' | xargs)"
 
-            echocmd mdadm --verbose --stop "$MDDEV"
-            echocmd mdadm --verbose --remove "$MDDEV" 2> /dev/null || true
+            echocmd mdadm --stop "$MDDEV"
+            echocmd mdadm --remove "$MDDEV" 2> /dev/null || true
 
             # leave the devices as is
             for x in "${parts[@]}"; do
@@ -537,13 +561,13 @@ volume() {
     case "$command" in
         status)
             [ -b "$LVDEV" ] || return 1
-            echocmd vgdisplay --verbose "$VGNAME" -S lvname="$LVNAME"
+            echocmd vgdisplay "$VGNAME" -S lvname="$LVNAME"
             ;;
         size)
             [ -b "$LVDEV" ] || return 0 #
-            IFS=' <' read -r _ _ _ LVSIZE <<< "$(lvs --noheadings -S lvname="$LVNAME")"
+            IFS=' <' read -r _ LVSIZE <<< "$(lvs --noheadings -S lvname="$LVNAME" -o lv_size)"
             #!! lvm use [kmgtp] with 1024 base !!#
-            echo "$(numfmt --from auto --to iec --round=down "${LVSIZE^^}i")B"
+            echo "$(numfmt --from auto --to iec "${LVSIZE^^}i")B"
             ;;
         mount) # mount [dir], if no dir, return current mount point
             if [ $# -gt 0 ]; then
@@ -575,7 +599,7 @@ volume() {
                     LVTYPE="thin-pool"; shift
                     ;;
             esac
-            info "$LVDEV: create $LVTYPE volume with $*"
+            #info "$LVDEV: create $LVTYPE volume with $*"
 
             if par_is_size "$1"; then
                 LVSIZE="$1"; shift
@@ -584,29 +608,29 @@ volume() {
             # pv check: all devices must belong to the same group
             for _pv in "$@"; do
                 local _vg
-                IFS=' ' read -r _vg <<< "$(pvs --noheadings -o vg_name "$_pv")" || true
+                IFS=' ' read -r _vg <<< "$(pvs --noheadings -o vg_name "$_pv" 2>/dev/null)" || true
                 if [ -n "$_vg" ] && [ "$_vg" != "$VGNAME" ]; then
                     error "$_pv belongs to group $_vg, expected $VGNAME"
                     return 1
                 fi
             done
 
-            if ! lvs "$VGNAME" > /dev/null; then
-                echocmd pvcreate --verbose "$@" || true
-                echocmd vgcreate --verbose "$VGNAME" "$@"
+            if ! lvs "$VGNAME" 2> /dev/null; then
+                echocmd pvcreate --quiet "$@" || true
+                echocmd vgcreate --quiet "$VGNAME" "$@"
             fi
 
             # create logical volume, default: take 100% free space
             if [ -n "$LVSIZE" ]; then
                 echo y | echocmd lvcreate   \
-                    --verbose               \
+                    --quiet                 \
                     --type "$LVTYPE"        \
                     --size "$LVSIZE"        \
                     --name "$LVNAME"        \
                     "$VGNAME"
             else
                 echo y | echocmd lvcreate   \
-                    --verbose               \
+                    --quiet                 \
                     --type "$LVTYPE"        \
                     --extents '100%FREE'    \
                     --name "$LVNAME"        \
@@ -623,27 +647,26 @@ volume() {
             echocmd umount "$LVDEV" || true
 
             # remove lv0
-            echocmd lvremove --verbose --yes "$LVDEV"
+            echocmd lvremove --yes "$LVDEV"
 
             # remove vg if no more volume on it
             if [ "$(lvs --noheadings "$VGNAME" | wc -l)" -eq 0 ]; then
                 IFS=' ' read -r -a devices <<< "$(pvs --noheadings -S vgname="$VGNAME" -o pv_name | xargs)"
-                echocmd vgremove --verbose "$VGNAME" # no '--yes' here
+                echocmd vgremove "$VGNAME" # no '--yes' here
                 for dev in "${devices[@]}"; do
-                    echocmd pvremove --verbose "$dev"
+                    echocmd pvremove "$dev"
                 done
             fi
             ;;
         add) # add <devices>
-            echocmd pvcreate --verbose "$@"
-            echocmd vgextend --verbose "$VGNAME" "$@"
+            echocmd pvcreate "$@"
+            echocmd vgextend "$VGNAME" "$@"
 
             local fstype
             fstype="$(disk "$LVDEV" fstype)"
             case "$fstype" in
                 btrfs)
                     echocmd lvextend            \
-                        --verbose               \
                         --extents '+100%FREE'   \
                         "$LVDEV" "$@"
 
@@ -661,7 +684,6 @@ volume() {
                     ;;
                 *)
                     echocmd lvextend            \
-                        --verbose               \
                         --extents '+100%FREE'   \
                         --resizefs              \
                         "$LVDEV" "$@"
@@ -693,13 +715,12 @@ hybrid() {
             local OPTS="NAME,SIZE,TYPE,MOUNTPOINTS,FSTYPE,UUID"
             printf "%-14s %7s %7s %s\n" "NAME" "SIZE" "TYPE" "MISC"
 
-            for LVNAME in $(lvs --noheadings -o lv_name | xargs); do
-                # ls logical volume
-                IFS=' ' read -r name size type misc <<< "$(                    \
-                    lsblk -o "$OPTS" /dev/*/"$LVNAME" | sed -n '2p' \
+            for lv in $(lvs --noheadings -o lv_path | xargs); do
+                IFS=' ' read -r name size type misc <<< "$( \
+                    lsblk -o "$OPTS" "$lv" | sed -n '2p'    \
                 )"
                 printf "%-14s %7s %7s %s\n" "$name" "$size" "$type" "$misc"
-                for pv in $(volume "$LVNAME" devices); do
+                for pv in $(volume "$lv" devices); do
                     # ls phy volume/raid device
                     IFS=' ' read -r name size type misc <<< "$( \
                         lsblk -o "$OPTS" "$pv" | sed -n '2p'    \
@@ -751,7 +772,7 @@ hybrid() {
                 size="$(disk "$dev" size)"
                 free="$(disk "$dev" size free)"
                 printf "%14s : %s" "$dev" "$(numfmt --from iec --to iec "${size%B}")B"
-                if [ "$free" != "0MB" ]; then
+                if [ "$free" != "0M" ]; then
                     printf " (%s free)" "$(numfmt --from iec --to iec "${free%B}")B"
                 fi
                 printf "\n"
@@ -773,15 +794,14 @@ hybrid() {
                 sort -u | xargs
             ;;
         mount) # mount [mountpint], if no mountpint specified, return current one
-            volume "$HDEV" mount "$@"
+            echofunc volume "$HDEV" mount "$@"
             ;;
         destroy)
             info "destroy $HDEV"
             IFS=' ' read -r -a mddevs <<< "$(volume "$HDEV" devices)"
-            volume "$HDEV" destroy
+            echofunc volume "$HDEV" destroy
             for mddev in "${mddevs[@]}"; do
-                info "destroy $mddev"
-                echo yes | raid "$mddev" destroy
+                echo yes | echofunc raid "$mddev" destroy
             done
             ;;
         create) # [fs] <devices ...>
@@ -802,7 +822,7 @@ hybrid() {
 
             # wipe disks
             for disk in "${DEVICES[@]}"; do
-                echo yes | disk "$disk" gpt
+                echo yes | echofunc disk "$disk" gpt
             done
 
             local PVDEVICES=()
@@ -814,11 +834,11 @@ hybrid() {
                 local free
                 for disk in "${DEVICES[@]}"; do
                     free=$(disk "$disk" size free)
-                    free=${free%MB}
+                    free=${free%B}
                     free=${free%.*}
 
                     # if free size < 128M
-                    if [ "$free" -lt 128 ]; then
+                    if [ "$free" -lt $((128 * 1048576)) ]; then
                         continue
                     fi
 
@@ -836,23 +856,26 @@ hybrid() {
                 # create parts
                 for disk in "${MDDEVICES[@]}"; do
                     local part="$disk$((${#PVDEVICES[@]} + 1))"
-                    info "create $part $MDPARTSIZE"
-                    disk "$disk" part "$MDPARTSIZE"MB
+                    info "create $part $MDPARTSIZE"B
+                    echofunc disk "$disk" create "$MDPARTSIZE"B
                     MDPARTS+=("$part")
                 done
 
                 # create raid
                 local MDDEV="$(block_device_next /dev/md)"
-                raid "$MDDEV" create auto "${MDPARTS[@]}" || true
+                echofunc raid "$MDDEV" create auto "${MDPARTS[@]}" || true
 
                 # !! recreate raid may end with unexpected devfs !!
-                if ! test -e "$MDDEV"; then
+                if ! test -b "$MDDEV"; then
                     error "create $MDDEV failed"
 cat << EOF
+    ===
     Create mdadm raid failed, possible cause:
 
     1. The raid has been assembled by system, which make devices busy;
     2. The raid was stopped and re-created with different devfs/name;
+    3. The $MDDEV is 'Not POSIX compatible.'
+    ===
 EOF
                     return 1
                 fi
@@ -865,10 +888,21 @@ EOF
             sleep 3
 
             # create volume
-            volume "$HDEV" create "${PVDEVICES[@]}"
+            echofunc volume "$HDEV" create "${PVDEVICES[@]}"
+
+            if ! test -b "$HDEV"; then
+cat << EOF
+    ===
+    Create lvm volume failed, possible cause:
+
+    1. The raid devices are not ready, wait for seconds;
+    2.
+    ===
+EOF
+            fi
 
             if [ -n "$FSTYPE" ]; then
-                disk "$HDEV" mkfs "$FSTYPE"
+                echofunc disk "$HDEV" mkfs "$FSTYPE"
             fi
             ;;
         add) # add <devices ...>
@@ -882,7 +916,7 @@ EOF
 
             # wipe disks
             for disk in "${DEVICES[@]}"; do
-                echo yes | disk "$disk" gpt
+                echo yes | echofunc disk "$disk" gpt
             done
 
             local MDDEV MDINDEX MDDEVICES MDPARTS MDPARTSIZE
@@ -893,9 +927,11 @@ EOF
             for MDDEV in $(volume "$HDEV" devices); do
 
                 MDPARTSIZE="$(raid "$MDDEV" size part)"
+                MDPARTSIZE="${MDPARTSIZE%B}"
 
                 for disk in "${DEVICES[@]}"; do
                     FREE="$(disk "$disk" size free)"
+                    FREE="${FREE%B}"
                     if [ "$FREE" -lt "$MDPARTSIZE" ]; then
                         info "$disk: no more spaces(expected $MDPARTSIZE, got $FREE)"
                         continue
@@ -905,13 +941,13 @@ EOF
 
                     # create new partition
                     info "$HDEV: create $PART for $MDDEV"
-                    disk "$disk" part "$MDPARTSIZE"
+                    echofunc disk "$disk" create "$MDPARTSIZE"B
                     MDPARTS+=("$PART")
                 done
 
                 # add the partition to raid
                 info "$HDEV: add ${MDPARTS[*]} to $MDDEV"
-                raid "$MDDEV" add "${MDPARTS[*]}"
+                echofunc raid "$MDDEV" add "${MDPARTS[*]}"
 
                 MDINDEX=$((MDINDEX + 1))
             done
@@ -921,8 +957,8 @@ EOF
             MDPARTSIZE=
             for disk in $(hybrid "$HDEV" devices); do
                 FREE="$(disk "$disk" size free)"
-                FREE="${FREE%[KMGTP]B}"
-                if [ "$FREE" -lt 128 ]; then
+                FREE="${FREE%B}"
+                if [ "$FREE" -lt $((128 * 1048576)) ]; then
                     continue
                 fi
                 if [ -z "$MDPARTSIZE" ] || [ "$FREE" -lt "$MDPARTSIZE" ]; then
@@ -940,7 +976,7 @@ EOF
             # create partitions
             MDPARTS=()
             for disk in "${MDDEVICES[@]}"; do
-                disk "$disk" part "$MDPARTSIZE"MB
+                echofunc disk "$disk" create "$MDPARTSIZE"B
                 MDPARTS+=($(disk "$disk" devices | awk '{print $NF}'))
             done
 
@@ -948,10 +984,10 @@ EOF
 
             # create raid pv
             MDDEV="$(block_device_next /dev/md)"
-            raid "$MDDEV" create auto "${MDPARTS[@]}"
+            echofunc raid "$MDDEV" create auto "${MDPARTS[@]}"
 
             # add pv to lv
-            volume "$HDEV" add "$MDDEV"
+            echofunc volume "$HDEV" add "$MDDEV"
             ;;
         *)
             hybrid_help
@@ -966,7 +1002,7 @@ examples() {
 $name disk info                         # show all disks informations
 $name disk /dev/sda status              # show /dev/sda status
 $name disk /dev/sda init                # init disk with a gpt partition table
-$name disk /dev/sda part 10G            # create a new 10G partition
+$name disk /dev/sda create 10G          # create a new 10G partition
 
 # raid examples
 

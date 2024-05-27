@@ -22,22 +22,6 @@ error() { echo -e "** \\033[31m$*\\033[39m"; }
 info()  { echo -e "** \\033[32m$*\\033[39m"; }
 warn()  { echo -e "** \\033[33m$*\\033[39m"; }
 
-# prompt text <true|false> ans
-prompt() {
-    local ans="$3"
-    echo -en "** \\033[32m$1\\033[39m"
-    if [ -n "$2" ]; then
-        case "$2" in
-            y|yes|true)
-                echo -en " [Y/n]"
-                ;;
-            *)
-                echo -en " [y/N]"
-                ;;
-        esac
-    fi
-}
-
 echocmd() {
     local cmd="${*//[[:space:]]+/ }"
     echo -e "--\\033[34m $cmd \\033[39m"
@@ -51,28 +35,54 @@ echofunc() {
     eval -- "$cmd"
 }
 
+# prompt "text" <true|false> ans
+prompt() {
+    #!! make sure variable name differ than input par !!#
+    local __var=$3
+    local __ans def
+    echo -en "** \\033[32m$1\\033[39m"
+    if [ -n "$2" ]; then
+        case "${2,,}" in
+            y|yes|true)
+                echo -en " [Y/n]"
+                def=Yes
+                ;;
+            *)
+                echo -en " [y/N]"
+                def=No
+                ;;
+        esac
+    fi
+    read -r __ans
+    __ans="${__ans:-$def}"
+    eval "$__var"="'${__ans,,}'"
+}
+
 # $0 <value>
 ans_is_true() {
-    [ "$1" = "1" ] || [ "${1,,}" = "y" ] || [ "${1,,}" = "yes" ]
+    case "${1,,}" in
+        1|y|yes) true  ;;
+        *)       false ;;
+    esac
 }
 
 par_is_size() {
     [[ "${1^^}" =~ ^[0-9\.]+[KMGTP]?I?B?$ ]]
 }
 
-# iec to bytes, 1024-based
-part_size() {
-    echo "$(numfmt --from iec "${1%B}")B"
+# for print
+to_iec() {
+    numfmt --from iec --to iec --format='%.1f' "${1%B}"
 }
 
-# iec to {KMGTP}B, 1024-based
-IEC_size() {
-    echo "$(numfmt --from iec --to iec "${1%B}")B"
+# mainly for disk size related ops
+to_iec_MB() {
+    echo "$(($(numfmt --from iec "${1%B}") / 1048576))M"
 }
 
-# 1024-based MB
-MegaBytes() {
-    echo "$(($(numfmt --from iec "${1%B}") / 1048576))MB"
+# from iec to Bytes, for size math
+from_iec() {
+    numfmt --from iec "$1"
 }
 
 # $0 <prefix>
@@ -156,9 +166,9 @@ disk() {
             #!! 'size free' on partition is undefined       !!#
             local total end
             # suppress 'unrecognised disk label' for part
-            total=$(parted "$DISK" unit B print 2>/dev/null \
-                | grep "^Disk $DISK:" | awk -F':' '{print $2}')
-            total="$(numfmt --from si "${total%B}")"
+            IFS=' :' read -r _ _ total <<< "$( \
+                parted "$DISK" unit B print 2>/dev/null | grep "^Disk $DISK:" \
+            )"
             case "$1" in
                 free)
                     # find out the last partition:
@@ -166,17 +176,15 @@ disk() {
                     #  1      1.05MB  1000205MB  1000204MB               primary
                     end=$(parted "$DISK" unit B print 2>/dev/null | grep "^ [0-9]\+ " | tail -1 | awk '{print $3}') || true
                     end=${end:-0}
-                    part_size "$((total - ${end%B}))"
+                    to_iec_MB "$((${total%B} - ${end%B}))"
                     ;;
                 total|*)
-                    part_size "$total"
+                    to_iec_MB "${total%B}"
                     ;;
             esac
             ;;
         gpt)
-            #info "$DISK: new GPT partition table"
-            read -r -p "It will erase all data from $DISK, continue? [y/N]" ans
-            ans=${ans:-N}
+            prompt "$DISK: new GPT partition table?" false ans
             ans_is_true "$ans" || return 1
 
             # remove signatures
@@ -200,7 +208,7 @@ EOF
             # 'You should reboot now before making further changes.'
             partprobe "$DISK" > /dev/null || true
             ;;
-        create) # create [fs] [size], size in [KMGTP]B
+        create) # create [fs] [size], size in [KMGTP]
             local size fs
             while test -n "$1"; do
                 if par_is_size "$1"; then
@@ -233,15 +241,15 @@ EOF
                 start=${start%B}
                 free=$((total - start))
 
-                info "$DISK: append a $(IEC_size "$size") partition"
+                info "$DISK: append a $(to_iec "$size") partition"
 
                 #!! everyone use 1024-base, but parted is 1000-based !!#
-                size=$(numfmt --from iec "${size%B}")
+                size=$(from_iec "${size%B}")
 
-                if [ "$((start + size))" -gt "$total" ]; then
-                    error "$DISK: request size($size) exceed limit($free)"
-                    return 1
-                fi
+                #if [ "$((start + size))" -gt "$total" ]; then
+                #    error "$DISK: request size($size) exceed limit($free)"
+                #    return 1
+                #fi
 
                 # put ~1M free space between partitions
                 if [ -n "$start" ]; then
@@ -271,8 +279,7 @@ EOF
             fi
             ;;
         delete)
-            prompt "$DISK: delete from kernel?" false
-            read -r ans
+            prompt "$DISK: delete from kernel?" false ans
             ans_is_true "$ans" || return 1
 
             local scsi
@@ -402,7 +409,7 @@ EOF
                 total|*)
                     # Array Size : 976630464 (931.39 GiB 1000.07 GB)
                     size=$(mdadm --detail "$MDDEV" | grep 'Array Size :' | awk -F':' '{print $2}' | awk '{print $1}')
-                    part_size "$((size * 1024))"
+                    to_iec "$size"K
                     ;;
             esac
             ;;
@@ -447,9 +454,7 @@ EOF
             echocmd mdadm --remove "$MDDEV" 2> /dev/null || true
             ;;
         destroy) # !!! Dangerous !!!
-            warn "destroying $MDDEV, it cann't be assembled again"
-            read -r -p "** Dangerous, are you sure to continue? [y/N]" ans
-            ans="${ans:-N}"
+            prompt "$MDDEV: destroy raid which can't be assembled again, continue?" false ans
             ans_is_true "$ans" || return 1
 
             # stop check/sync
@@ -595,9 +600,10 @@ volume() {
             ;;
         size)
             [ -b "$LVDEV" ] || return 0 #
-            IFS=' <' read -r _ LVSIZE <<< "$(lvs --noheadings -S lvname="$LVNAME" -o lv_size)"
+            LVSIZE="$(lvs --noheadings -S lvname="$LVNAME" -o lv_size | awk '{print $NF}')"
+            LVSIZE="${LVSIZE#<}" # remove leading '<'
             #!! lvm use [kmgtp] with 1024 base !!#
-            echo "$(numfmt --from auto --to iec "${LVSIZE^^}i")B"
+            to_iec "${LVSIZE^^}"
             ;;
         mount) # mount [dir], if no dir, return current mount point
             if [ $# -gt 0 ]; then
@@ -677,7 +683,7 @@ volume() {
             echocmd umount "$LVDEV" || true
 
             # remove lv0
-            echocmd lvremove --yes "$LVDEV"
+            echocmd lvremove --yes "$VGNAME" -S lvname="$LVNAME"
 
             # remove vg if no more volume on it
             if [ "$(lvs --noheadings "$VGNAME" | wc -l)" -eq 0 ]; then
@@ -766,12 +772,6 @@ hybrid() {
                 done
             done
             ;;
-        info)
-            volume info
-            raid info
-            disk info
-            return
-            ;;
         help)
             hybrid_help
             return
@@ -801,9 +801,9 @@ hybrid() {
             for dev in $(hybrid "$HDEV" devices); do
                 size="$(disk "$dev" size)"
                 free="$(disk "$dev" size free)"
-                printf "%14s : %s" "$dev" "$(numfmt --from iec --to iec "${size%B}")B"
+                printf "%14s : %s" "$dev" "$(to_iec "${size%B}")"
                 if [ "$free" != "0M" ]; then
-                    printf " (%s free)" "$(numfmt --from iec --to iec "${free%B}")B"
+                    printf " (%s free)" "$(to_iec "${free%B}")"
                 fi
                 printf "\n"
             done
@@ -845,9 +845,7 @@ hybrid() {
                 esac
             done
 
-            info "$HDEV: create volume($FSTYPE) with devices ${DEVICES[*]}"
-            read -r -p "The disks will be wipe out, continue? [y/N] " ans
-            ans=${ans:-N}
+            prompt "$HDEV: devices ${DEVICES[*]} will be formated, continue?" false ans
             ans_is_true "$ans" || return 1
 
             # wipe disks
@@ -863,9 +861,8 @@ hybrid() {
 
                 local free
                 for disk in "${DEVICES[@]}"; do
-                    free=$(disk "$disk" size free)
-                    free=${free%B}
-                    free=${free%.*}
+                    free="$(disk "$disk" size free)"
+                    free="$(from_iec "$free")"
 
                     # if free size < 128M
                     if [ "$free" -lt $((128 * 1048576)) ]; then
@@ -877,6 +874,7 @@ hybrid() {
                     fi
                     MDDEVICES+=("$disk")
                 done
+                MDPARTSIZE="$(to_iec "$MDPARTSIZE")B"
 
                 # Done? OR, short of devices
                 if [ "${#MDDEVICES[@]}" -lt 2 ]; then
@@ -886,8 +884,8 @@ hybrid() {
                 # create parts
                 for disk in "${MDDEVICES[@]}"; do
                     local part="$disk$((${#PVDEVICES[@]} + 1))"
-                    info "create $part $MDPARTSIZE"B
-                    echofunc disk "$disk" create "$MDPARTSIZE"B
+                    info "create $part $MDPARTSIZE"
+                    echofunc disk "$disk" create "$MDPARTSIZE"
                     MDPARTS+=("$part")
                 done
 
@@ -939,9 +937,7 @@ EOF
             local DEVICES
             IFS=' ' read -r -a DEVICES <<< "$@"
 
-            info "$HDEV: add devices ${DEVICES[*]}"
-            read -r -p "The disks will be wipe out, continue? [y/N] " ans
-            ans=${ans:-N}
+            prompt "$HDEV: devices ${DEVICES[*]} will be formated, continue?" false ans
             ans_is_true "$ans" || return 1
 
             # wipe disks
@@ -987,7 +983,8 @@ EOF
             MDPARTSIZE=
             for disk in $(hybrid "$HDEV" devices); do
                 FREE="$(disk "$disk" size free)"
-                FREE="${FREE%B}"
+                FREE="$(from_iec "$FREE")"
+
                 if [ "$FREE" -lt $((128 * 1048576)) ]; then
                     continue
                 fi
@@ -997,6 +994,7 @@ EOF
 
                 MDDEVICES+=("$disk")
             done
+            MDPARTSIZE="$(to_iec "$MDPARTSIZE")"
 
             if [ "${#MDDEVICES[@]}" -lt 2 ]; then
                 info "$HDEV: no more device spaces"
@@ -1010,11 +1008,12 @@ EOF
                 MDPARTS+=($(disk "$disk" devices | awk '{print $NF}'))
             done
 
-            sleep 3
-
             # create raid pv
             MDDEV="$(block_device_next /dev/md)"
             echofunc raid "$MDDEV" create auto "${MDPARTS[@]}"
+
+            # wait until raids are ready
+            sleep 3
 
             # add pv to lv
             echofunc volume "$HDEV" add "$MDDEV"
@@ -1028,21 +1027,41 @@ EOF
 examples() {
     local name="$(basename "$0")"
     cat << EOF
-# disk examples
-$name disk info                         # show all disks informations
-$name disk /dev/sda status              # show /dev/sda status
-$name disk /dev/sda init                # init disk with a gpt partition table
-$name disk /dev/sda create 10G          # create a new 10G partition
+-- disk examples --
+$name disk info                                     # show all disks informations
+$name disk /dev/sda status                          # show /dev/sda status
+$name disk /dev/sda gpt                             # create a gpt partition table
+$name disk /dev/sda create 10G                      # create a new 10G partition
 
-# raid examples
+-- raid examples --
+$name raid ls                                       # list all raid devices
+$name raid info                                     # show all raid devices info
+$name raid /dev/md0 create auto /dev/sd[a-d]1       # create a new raid device
+$name raid /dev/md0 add /dev/sde1                   # add partition to existing raid device
+$name raid /dev/md0 destroy                         # destroy a raid device
 
-# volume examples
+-- volume examples --
+$name volume info                                   # show all logical volume info
+$name volume /dev/vg0/volume0 create /dev/md[12]    # create a new logical volume
+$name volume /dev/vg0/volume0 add /dev/md3          # add new device(s) to existing logical volume
+$name volume /dev/vg0/volume0 destroy               # destroy an existing logical volume
+
+-- hybrid volume examples --
+$name ls                                            # list all hybrid volumes
+$name /dev/vg0/volume0 create btrfs /dev/sd[a-z]    # create new hybrid volume on devices
+$name /dev/vg0/volume0 add /dev/sde                 # add new device(s) to existing hybrid volume
+$name /dev/vg0/volume0 status                       # check hybrid volume status
+$name /dev/vg0/volume0 mount /services              # mount a hybrid volume
+$name /dev/vg0/volume0 destroy                      # destroy a hybrid volume
 EOF
 }
 
 case "$1" in
     hybrid|volume|raid|disk)
         "$@"
+        ;;
+    examples)
+        examples
         ;;
     *)
         hybrid "$@"

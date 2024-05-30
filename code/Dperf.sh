@@ -41,10 +41,10 @@ benchmark() {
 
 benchmark2() {
     if which ioping &>/dev/null; then
-        echo -e "\n== Latency test: "
-        ioping -count 10 -size 1M -quiet .
-        echo -e "\n== Seek rate test: "
-        ioping -rapid -quiet .
+        echo -e "\n== Latency: bs=$1"
+        ioping -count 10 -size "$1" -quiet .
+        echo -e "\n== Seek: "
+        ioping -rapid -size "$1" -quiet .
     else
         echo -e "\n== Please install ioping first"
     fi

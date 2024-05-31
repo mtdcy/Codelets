@@ -48,13 +48,16 @@ echocmd() {
 # prompt "text" <true|false> ans
 prompt() {
     #!! make sure variable name differ than input par !!#
-    local __var=$3
+    local __var=$3 __ans
     echo -en "**$YELLOW $1 $NC"
     case "${2,,}" in
         y|yes|true) echo -en " [Y/n]"; eval "$__var"=Y ;;
         *)          echo -en " [y/N]"; eval "$__var"=N ;;
     esac
-    eval read -r "$__var"
+    eval read -r __ans
+    if test -n "$__ans"; then
+        eval "$__var"="$__ans"
+    fi
     echo ""
 }
 
@@ -993,83 +996,92 @@ hybrid() {
                 fi
                 shift
             done
-            local DEVICES=("$@")
 
-            prompt "$HDEV: devices ${DEVICES[*]} will be formated, continue?" false ans
+            local stagefile0="/tmp/hybrid-create-$$.stage0"
+            local stagefile1="/tmp/hybrid-create-$$.stage1"
+
+            # find out hybrid volume topo
+            for disk in "$@"; do
+                local dsz
+                dsz="$(disk "$disk" size)"
+                printf "%s %s %s\n"                     \
+                    "$disk"                             \
+                    "$(to_iec "$dsz")"                  \
+                    "$(to_iec_MB "$dsz" | from_iec)"
+            done | sort -k 2 -n -s > "$stagefile0"
+
+            local i=1 used=0
+            while [ "$i" -lt $# ]; do
+                local pv psz
+                IFS=' ' read -r disk _ dsz <<< "$(
+                    sed -n "${i}p" "$stagefile0"
+                )"
+                pv="/dev/md$((i-1))";
+                psz=$((dsz - used))
+                if [ "$psz" -lt "$RAID_PART_LIMIT_MIN" ]; then
+                    break
+                fi
+                printf "%s %s %s %s\n" \
+                    "$pv" \
+                    "$(to_iec "$psz")" \
+                    "$(from_iec "$psz")" \
+                    "$(sed -n "$i,$#p" "$stagefile0" | awk '{print $1}' | xargs)"
+
+                i=$((i + 1))
+                used=$((used + psz))
+            done > "$stagefile1"
+
+            echo -e "\n--- hybrid volume disks ---"
+            cat "$stagefile0"
+            echo -e "\n--- hybrid volume topology ---"
+            cat "$stagefile1"
+            echo -e "--- end ---\n"
+
+            prompt "$HDEV: devices $* will be formated, continue?" false ans
             ans_is_true "$ans" || return 1
 
             # wipe disks
-            for disk in "${DEVICES[@]}"; do
+            for disk in "$@"; do
                 echo yes | echofunc disk "$disk" gpt
             done
 
-            local MDDEV
-            local PVDEVICES=()
-            while true; do
-                local MDDISKS=()
-                local MDPARTS=()
-                local MDPARTSIZE="$RAID_PART_LIMIT_MAX"
-
-                local free
-                for disk in "${DEVICES[@]}"; do
-                    free="$(disk "$disk" size free)"
-                    free="$(from_iec "$free")"
-
-                    # too small
-                    if [ "$free" -lt "$RAID_PART_LIMIT_MIN" ]; then
-                        continue
-                    fi
-
-                    if [ "$free" -lt "$MDPARTSIZE" ]; then
-                        MDPARTSIZE="$free"
-                    fi
-                    MDDISKS+=("$disk")
-                done
-                # to iec, also truncate the size
-                MDPARTSIZE="$(to_iec "$MDPARTSIZE")"
-
-                # Done? OR, short of devices
-                if [ "${#MDDISKS[@]}" -lt 2 ]; then
-                    break;
-                fi
-
-                # create parts
-                for disk in "${MDDISKS[@]}"; do
-                    echofunc disk "$disk" create "$MDPARTSIZE"
-                    # ugly code: find way to retrieve the right partition
-                    MDPARTS+=("$(disk "$disk" devices | awk '{print $NF}')")
+            local devices=()
+            while read -r pv _ psz disks; do
+                local parts=()
+                for disk in $disks; do
+                    echofunc disk "$disk" create "$psz"
+                    parts+=("$(disk "$disk" devices | awk '{print $NF}')")
                 done
 
-                # create raid
-                MDDEV="$(devfs_next /dev/md)"
-                echofunc raid "$MDDEV" create "${MDPARTS[@]}" || true
+                echofunc raid "$pv" create "${parts[@]}" || true
+                devices+=("$pv")
 
-                if ! test -b "$MDDEV"; then
-                    error "create $MDDEV failed"
+                if ! test -b "$pv"; then
+                    error "$HDEV: create $pv failed"
 cat << EOF
 
     ===
-    Create mdadm raid failed, possible cause:
+    Create pv/raid device failed, possible cause:
 
-    1. The raid has been assembled by system, which make devices busy;
+    1. The raid has been assembled by system, which cause device busy;
     2. The raid was stopped and re-created with different devfs/name;
-    3. The $MDDEV is 'Not POSIX compatible.'
+    3. The $pv is 'Not POSIX compatible.'
     ===
 
 EOF
-                    return 1
                 fi
+            done < "$stagefile1"
 
-                PVDEVICES+=("$MDDEV")
-                DEVICES=("${MDDISKS[@]}")
-            done
+            echo -e "\n--- pv/raid state ---"
+            cat /proc/mdstat
+            echo -e "--- end ---\n"
 
             # ugly code:
-            warn "$HDEV: wait until $MDDEV not busy"
+            warn "$HDEV: wait until pv/raid device(s) ready"
             sleep 3
 
             # create volume: force linear
-            echofunc volume "$HDEV" create linear "${PVDEVICES[@]}" || true
+            echofunc volume "$HDEV" create linear "${devices[@]}" || true
 
             if ! test -b "$HDEV"; then
 cat << EOF
@@ -1131,7 +1143,7 @@ EOF
                 echofunc raid "$pv" add "${parts[@]}"
             done < "$stagefile"
 
-            prompt "$HDEV: wait for pv/raid device(s) reshaping" true ans
+            prompt "$HDEV: wait for pv/raid device(s) reshaping (it takes minutes to hours)?" false ans
             if ans_is_true "$ans"; then
                 while grep -F "reshape" /proc/mdstat &>/dev/null; do
                     warn "$HDEV: wait until pv/raid device(s) reshape done"

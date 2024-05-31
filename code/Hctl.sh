@@ -29,9 +29,9 @@ PURPLE="\\033[35m"
 CYAN="\\033[36m"
 NC="\\033[0m"
 
-error() { echo -e "!!$RED $* $NC"; }
-info()  { echo -e "!!$GREEN $* $NC"; }
-warn()  { echo -e "!!$YELLOW $* $NC"; }
+error() { echo -e "!!$RED $* $NC";      }
+info()  { echo -e "!!$GREEN $* $NC";    }
+warn()  { echo -e "!!$YELLOW $* $NC";   }
 
 echofunc() {
     local cmd="${*//[[:space:]]+/ }"
@@ -91,25 +91,31 @@ par_is_raidlevel() {
 
 # for print
 to_iec() {
-    if test -n "$1"; then
-        numfmt --from iec --to iec --round=down --format='%.2f' "${1%B}"
-    else
-        numfmt --from iec --to iec --round=down --format='%.2f'
-    fi
+    local sz="${1^^%B}"
+    if [ $# -eq 0 ]; then read -r sz; fi
+    numfmt --from iec --to iec --round=down --format='%.2f' "$sz"
 }
 
 # mainly for disk size related ops
 to_iec_MB() {
+    local sz="${1^^%B}"
+    if [ $# -eq 0 ]; then read -r sz; fi
     echo "$(($(numfmt --from iec "${1%B}") / 1048576))M"
+}
+
+to_iec_100MB() {
+    local sz="${1^^%B}"
+    if [ $# -eq 0 ]; then read -r sz; fi
+    sz="$(numfmt --from iec "$sz")"
+    sz="$(((sz / 104857600) * 100))"
+    echo "$sz"M
 }
 
 # from iec to Bytes, for size math
 from_iec() {
-    if test -n "$1"; then
-        numfmt --from iec "${1%B}"
-    else
-        numfmt --from iec
-    fi
+    local sz="${1^^%B}"
+    if [ $# -eq 0 ]; then read -r sz; fi
+    numfmt --from iec "$sz"
 }
 
 # $0 <prefix>
@@ -228,7 +234,7 @@ disk() {
             ans_is_true "$ans" || return 1
 
             # remove signatures
-            wipefs --all --force "$DISK" > /dev/null
+            echocmd wipefs --all --quiet --force "$DISK"
             # create new gpt part table
             echocmd parted --script --fix "$DISK" mklabel gpt || {
 cat << EOF
@@ -250,7 +256,7 @@ EOF
 
             echocmd partprobe "$DISK" || true
             ;;
-        create) # create [fstype] [size], size in [KMGTP]
+        part) # create [fstype] [size], size in [KMGTP]
             local size fstype part
             while test -n "$1"; do
                 if par_is_size "$1"; then
@@ -887,6 +893,24 @@ volume() {
             error "$LVDEV: delete device from volume is not supported"
             return 1
             ;;
+        resize) # resize <min|max|size>
+            local size="$1"
+            size="${size:-max}"
+
+            # resize fs to minimal first
+            echofunc disk "$LVDEV" resizefs min
+
+            echocmd pvresize "$(volume "$LVDEV" devices)"
+            case "$size" in
+                max)
+                    echocmd lvextend --extents '+100%FREE' "$LVDEV"
+                    ;;
+                *)
+                    echocmd lvextend --extents "$size" "$LVDEV"
+                    ;;
+            esac
+            echofunc disk "$LVDEV" resizefs "$size"
+            ;;
         *)
             error "$LVDEV: unknown command $command"
             return 1
@@ -923,6 +947,7 @@ hybrid() {
                     done
                 done
             done
+            return 0
             ;;
     esac
 
@@ -1049,7 +1074,7 @@ hybrid() {
             while read -r pv _ psz disks; do
                 local parts=()
                 for disk in $disks; do
-                    echofunc disk "$disk" create "$psz"
+                    echofunc disk "$disk" part "$psz"
                     parts+=("$(disk "$disk" devices | awk '{print $NF}')")
                 done
 
@@ -1136,7 +1161,7 @@ EOF
 
                 local parts=()
                 for disk in $disks; do
-                    echofunc disk "$disk" create "$psz"
+                    echofunc disk "$disk" part "$psz"
                     parts+=("$(disk "$disk" devices | awk '{print $NF}')")
                 done
                 info "$HDEV: add ${parts[*]} to $pv"
@@ -1173,12 +1198,25 @@ EOF
             fi
             ;;
         resize) # resize [max|size]
-            # TODO: move to volume()
-            local size="max"
-            if test -n "$1"; then
-                size="$1"
-                shift
-            fi
+            local size="$1"
+            size="${size:-max}"
+
+            local stagefile="/tmp/hybrid-resize-$$.stage"
+            # find devices info
+            for disk in $(hybrid "$HDEV" devices); do
+                local dsz
+                dsz="$(disk "$disk" size free | from_iec)"
+                if [ "$dsz" -lt "$RAID_PART_LIMIT_MIN" ]; then
+                    continue
+                fi
+                printf "%s %s %s\n"                     \
+                    "$disk"                             \
+                    "$(to_iec "$dsz")"                  \
+                    "$(to_iec_MB "$dsz")"
+            done > "$stagefile"
+
+            cat "$stagefile"
+            return 0
 
             local MDDEV MDDISKS MDPARTS MDPARTSIZE
 
@@ -1207,7 +1245,7 @@ EOF
             if [ "${#MDDISKS[@]}" -ge 2 ]; then
                 info "$HDEV: create new pv/raid device @ ${MDDISKS[*]}"
                 for disk in "${MDDISKS[@]}"; do
-                    echofunc disk "$disk" create "$MDPARTSIZE"
+                    echofunc disk "$disk" part "$MDPARTSIZE"
                     MDPARTS+=("$(disk "$disk" devices | awk '{print $NF}')")
                 done
 
@@ -1223,17 +1261,7 @@ EOF
                 echofunc volume "$HDEV" add "$MDDEV"
             fi
 
-            echocmd pvresize "$(volume "$HDEV" devices)"
-            case "$size" in
-                max)
-                    echocmd lvextend --extents '+100%FREE' "$HDEV"
-                    ;;
-                *)
-                    echocmd lvextend --extents "$size" "$HDEV"
-                    ;;
-            esac
-
-            echofunc disk "$HDEV" resizefs "$size"
+            echofunc volume "$HDEV" resize "$size"
             ;;
         delete)
             error "TODO: delete device from hybrid volume"
@@ -1253,7 +1281,7 @@ examples() {
 $NAME disk info                                     # show all disks informations
 $NAME disk /dev/sda status                          # show /dev/sda status
 $NAME disk /dev/sda gpt                             # create a gpt partition table
-$NAME disk /dev/sda create 10G                      # create a new 10G partition
+$NAME disk /dev/sda part 10G                        # create a new 10G partition
 $NAME disk /dev/sda size free                       # get disk free space size
 
 -- raid examples --

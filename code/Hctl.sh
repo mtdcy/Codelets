@@ -1022,10 +1022,9 @@ hybrid() {
                 shift
             done
 
-            local stagefile0="/tmp/hybrid-create-$$.stage0"
-            local stagefile1="/tmp/hybrid-create-$$.stage1"
+            local topoinfo="/tmp/hybrid-create-topoinfo-$$"
 
-            # find out hybrid volume topo
+            # save disks info
             for disk in "$@"; do
                 local dsz
                 dsz="$(disk "$disk" size)"
@@ -1033,33 +1032,10 @@ hybrid() {
                     "$disk"                             \
                     "$(to_iec "$dsz")"                  \
                     "$(to_iec_MB "$dsz" | from_iec)"
-            done | sort -k 2 -n -s > "$stagefile0"
+            done | map_disks_to_raid > "$topoinfo"
 
-            local i=1 used=0
-            while [ "$i" -lt $# ]; do
-                local pv psz
-                IFS=' ' read -r disk _ dsz <<< "$(
-                    sed -n "${i}p" "$stagefile0"
-                )"
-                pv="/dev/md$((i-1))";
-                psz=$((dsz - used))
-                if [ "$psz" -lt "$RAID_PART_LIMIT_MIN" ]; then
-                    break
-                fi
-                printf "%s %s %s %s\n" \
-                    "$pv" \
-                    "$(to_iec "$psz")" \
-                    "$(from_iec "$psz")" \
-                    "$(sed -n "$i,$#p" "$stagefile0" | awk '{print $1}' | xargs)"
-
-                i=$((i + 1))
-                used=$((used + psz))
-            done > "$stagefile1"
-
-            echo -e "\n--- hybrid volume disks ---"
-            cat "$stagefile0"
             echo -e "\n--- hybrid volume topology ---"
-            cat "$stagefile1"
+            cat "$topoinfo"
             echo -e "--- end ---\n"
 
             prompt "$HDEV: devices $* will be formated, continue?" false ans
@@ -1095,7 +1071,7 @@ cat << EOF
 
 EOF
                 fi
-            done < "$stagefile1"
+            done < "$topoinfo"
 
             echo -e "\n--- pv/raid state ---"
             cat /proc/mdstat
@@ -1123,32 +1099,51 @@ EOF
             echofunc disk "$HDEV" fstype "$fstype"
             ;;
         add) # add devices ...
-            local stagefile="/tmp/hybrid-add-$$.stage"
+            local diskinfo="/tmp/hybrid-add-diskinfo-$$"
+            local topoinfo="/tmp/hybrid-add-topoinfo-$$"
 
-            # pv/raid devices info
+            # save disks info, ascend
+            for disk in "$@"; do
+                local dsz
+                dsz="$(disk "$disk" size)"
+                printf "%s %s %s\n"                     \
+                    "$disk"                             \
+                    "$(to_iec "$dsz")"                  \
+                    "$(to_iec_MB "$dsz" | from_iec)"
+            done | sort -k 2 -n -s > "$diskinfo"
+
+            # update hybrid volume topology
             for pv in $(volume "$HDEV" devices); do
                 local psz
                 psz="$(raid "$pv" size part)"
                 # /dev/md0 1G <1G in Bytes>
                 printf "%s %s %s\n" "$pv" "$(to_iec "$psz")" "$(from_iec "$psz")"
-            done > "$stagefile"
+            done > "$topoinfo"
 
+            #!! descend by part size, so match biggest part first !!#
             local descend
-            # sort by part size, descend
-            descend="$(sort -k 2 -nr -s < "$stagefile")"
-            # map new device(s) to pv/raid devices
-            for disk in "$@"; do
-                local dsz # disk size
-                dsz="$(disk "$disk" size | from_iec)"
+            descend="$(sort -k 2 -nr -s < "$topoinfo")"
 
+            while read -r disk _ dsz; do
                 while read -r pv _ psz; do
-                    if [ "$psz" -gt "$dsz" ]; then continue; fi
+                    if [ "$psz" -gt "$dsz" ]; then
+                        continue
+                    fi
                     dsz=$((dsz - psz))
-                    sed -i "s|$pv.*$|& $disk|" "$stagefile"
+                    sed -i "s|$pv.*$|& $disk|" "$topoinfo"
                 done <<< "$descend"
-            done
 
-            prompt "$HDEV: $* devices will be formated, continue?" false ans
+                # disk remains size
+                printf "%s %s %s\n" "$disk" "$(to_iec "$dsz")" "$dsz"
+            done < "$diskinfo" > "$diskinfo.1"
+
+            map_disks_to_raid < "$diskinfo.1" >> "$topoinfo"
+
+            echo -e "\n--- hybrid volume topology ---"
+            cat "$topoinfo"
+            echo -e "--- hybrid volume topology ---\n"
+
+            prompt "$HDEV: $* will be formated, continue?" false ans
             ans_is_true "$ans" || return 1
 
             for disk in "$@"; do
@@ -1156,6 +1151,7 @@ EOF
                 echo yes | echofunc disk "$disk" gpt
             done
 
+            local extra=()
             while read -r pv _ psz disks; do
                 info "$HDEV: prepare parts for pv/raid device $pv"
 
@@ -1164,9 +1160,21 @@ EOF
                     echofunc disk "$disk" part "$psz"
                     parts+=("$(disk "$disk" devices | awk '{print $NF}')")
                 done
-                info "$HDEV: add ${parts[*]} to $pv"
-                echofunc raid "$pv" add "${parts[@]}"
-            done < "$stagefile"
+
+                if [ -b "$pv" ]; then
+                    info "$HDEV: add ${parts[*]} to $pv"
+                    echofunc raid "$pv" add "${parts[@]}"
+                else
+                    info "$HDEV: new $pv with ${parts[*]}"
+                    echofunc raid "$pv" create "${parts[@]}"
+                    extra+=("$pv")
+                fi
+            done < "$topoinfo"
+
+            if test -n "${extra[*]}"; then
+                info "$HDEV: extend with ${extra[*]}"
+                echofunc volume "$HDEV" add "${extra[@]}"
+            fi
 
             prompt "$HDEV: wait for pv/raid device(s) reshaping (it takes minutes to hours)?" false ans
             if ans_is_true "$ans"; then
@@ -1177,7 +1185,7 @@ EOF
                 # Known Issue:
                 #  'New size (nnnn extents) matches existing size'
                 # fall through to resize:
-                hybrid "$HDEV" resize max || true
+                echofunc volume "$HDEV" resize max || true
             else
 cat << EOF
 $(echo -e "$RED
@@ -1198,70 +1206,7 @@ EOF
             fi
             ;;
         resize) # resize [max|size]
-            local size="$1"
-            size="${size:-max}"
-
-            local stagefile="/tmp/hybrid-resize-$$.stage"
-            # find devices info
-            for disk in $(hybrid "$HDEV" devices); do
-                local dsz
-                dsz="$(disk "$disk" size free | from_iec)"
-                if [ "$dsz" -lt "$RAID_PART_LIMIT_MIN" ]; then
-                    continue
-                fi
-                printf "%s %s %s\n"                     \
-                    "$disk"                             \
-                    "$(to_iec "$dsz")"                  \
-                    "$(to_iec_MB "$dsz")"
-            done > "$stagefile"
-
-            cat "$stagefile"
-            return 0
-
-            local MDDEV MDDISKS MDPARTS MDPARTSIZE
-
-            MDDISKS=()
-            MDPARTSIZE="$RAID_PART_LIMIT_MAX"
-
-            # enough space for new pv devce?
-            for disk in $(hybrid "$HDEV" devices); do
-                echocmd partprobe "$disk"
-
-                local free
-                free="$(disk "$disk" size free)"
-                free="$(from_iec "$free")"
-
-                if [ "$free" -lt "$RAID_PART_LIMIT_MIN" ]; then
-                    continue
-                fi
-                if [ "$free" -lt "$MDPARTSIZE" ]; then
-                    MDPARTSIZE="$free"
-                fi
-
-                MDDISKS+=("$disk")
-            done
-            MDPARTSIZE="$(to_iec "$MDPARTSIZE")"
-
-            if [ "${#MDDISKS[@]}" -ge 2 ]; then
-                info "$HDEV: create new pv/raid device @ ${MDDISKS[*]}"
-                for disk in "${MDDISKS[@]}"; do
-                    echofunc disk "$disk" part "$MDPARTSIZE"
-                    MDPARTS+=("$(disk "$disk" devices | awk '{print $NF}')")
-                done
-
-                # create raid pv
-                MDDEV="$(devfs_next /dev/md)"
-                echofunc raid "$MDDEV" create "${MDPARTS[@]}"
-
-                # wait until raids are ready
-                warn "$HDEV: wait until $MDDEV not busy"
-                sleep 3
-
-                # add pv to lv
-                echofunc volume "$HDEV" add "$MDDEV"
-            fi
-
-            echofunc volume "$HDEV" resize "$size"
+            volume "$HDEV" resize "$@"
             ;;
         delete)
             error "TODO: delete device from hybrid volume"
@@ -1273,6 +1218,54 @@ EOF
             return 1
             ;;
     esac
+}
+
+# /dev/sdb 10.00G 10737418240
+# /dev/sdc 20.00G 21474836480
+# /dev/sdd 20.00G 21474836480
+#
+# =>
+#
+# /dev/md0 10.00G 10737418240 /dev/sdb /dev/sdc /dev/sdd
+# /dev/md1 10.00G 10737418240 /dev/sdc /dev/sdd
+
+map_disks_to_raid() {
+    local diskinfo
+
+    # ascend disks info <pipe>
+    diskinfo="$(sort -k 2 -n -s)"
+
+    local mdno=0
+    while test -b "/dev/md$mdno"; do
+        mdno=$((mdno + 1))
+    done
+
+    local lino=0 used=0
+    while read -r disk _ dsz; do
+        local pv psz disks=()
+
+        IFS=' ' read -r -a disks <<< "$(
+            awk "NR > $lino {print \$1}" <<< "$diskinfo" | xargs
+        )"
+        if [ "${#disks[@]}" -lt 2 ]; then
+            break # no more disks
+        fi
+
+        # check free spaces
+        psz=$((dsz - used))
+        if [ "$psz" -ge "$RAID_PART_LIMIT_MIN" ]; then
+            used=$((used + psz))
+
+            pv="/dev/md$mdno"
+            printf "%s %s %s %s\n"      \
+                "$pv"                   \
+                "$(to_iec "$psz")"      \
+                "$(from_iec "$psz")"    \
+                "${disks[*]}"
+            mdno=$((mdno + 1))
+        fi
+        lino=$((lino + 1))
+    done <<< "$diskinfo"
 }
 
 examples() {

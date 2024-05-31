@@ -102,7 +102,11 @@ to_iec_MB() {
 
 # from iec to Bytes, for size math
 from_iec() {
-    numfmt --from iec "${1%B}"
+    if test -n "$1"; then
+        numfmt --from iec "${1%B}"
+    else
+        numfmt --from iec
+    fi
 }
 
 # $0 <prefix>
@@ -1082,45 +1086,67 @@ EOF
             echofunc disk "$HDEV" fstype "$fstype"
             ;;
         add) # add devices ...
-            local DEVICES=("$@")
-            prompt "$HDEV: devices ${DEVICES[*]} will be formated, continue?" false ans
+            local stagefile="/tmp/hybrid-add-$$.stage"
+
+            # pv/raid devices info
+            for pv in $(volume "$HDEV" devices); do
+                local psz
+                psz="$(raid "$pv" size part)"
+                # /dev/md0 1G <1G in Bytes>
+                printf "%s %s %s\n" "$pv" "$(to_iec "$psz")" "$(from_iec "$psz")"
+            done > "$stagefile"
+
+            local descend
+            # sort by part size, descend
+            descend="$(sort -k 2 -nr -s < "$stagefile")"
+            # map new device(s) to pv/raid devices
+            for disk in "$@"; do
+                local dsz # disk size
+                dsz="$(disk "$disk" size | from_iec)"
+
+                while read -r pv _ psz; do
+                    if [ "$psz" -gt "$dsz" ]; then continue; fi
+                    dsz=$((dsz - psz))
+                    sed -i "s|$pv.*$|& $disk|" "$stagefile"
+                done <<< "$descend"
+            done
+
+            prompt "$HDEV: $* devices will be formated, continue?" false ans
             ans_is_true "$ans" || return 1
 
-            # wipe disks
-            for disk in "${DEVICES[@]}"; do
+            for disk in "$@"; do
+                # wipe disks
                 echo yes | echofunc disk "$disk" gpt
             done
 
-            local MDDISKS MDPARTS MDPARTSIZE
-
-            for pv in $(volume "$HDEV" devices); do
-                MDPARTS=()
-                MDPARTSIZE="$(raid "$pv" size part)"
-                MDPARTSIZE="$(from_iec "$MDPARTSIZE")"
-
+            while read -r pv _ psz disks; do
                 info "$HDEV: prepare parts for pv/raid device $pv"
-                for disk in "${DEVICES[@]}"; do
-                    local free
-                    free="$(disk "$disk" size free)"
-                    free="$(from_iec "$free")"
-                    if [ "$free" -lt "$MDPARTSIZE" ]; then
-                        info "$HDEV: no more space left on $disk"
-                        continue
-                    fi
 
-                    echofunc disk "$disk" create "$MDPARTSIZE"
-                    MDPARTS+=("$(disk "$disk" devices | awk '{print $NF}')")
+                local parts=()
+                for disk in $disks; do
+                    echofunc disk "$disk" create "$psz"
+                    parts+=("$(disk "$disk" devices | awk '{print $NF}')")
                 done
+                info "$HDEV: add ${parts[*]} to $pv"
+                echofunc raid "$pv" add "${parts[@]}"
+            done < "$stagefile"
 
-                info "$HDEV: add ${MDPARTS[*]} to $pv"
-                echofunc raid "$pv" add "${MDPARTS[@]}"
-            done
-
+            prompt "$HDEV: wait for pv/raid device(s) reshaping" true ans
+            if ans_is_true "$ans"; then
+                while grep -F "reshape" /proc/mdstat &>/dev/null; do
+                    warn "$HDEV: wait until pv/raid device(s) reshape done"
+                    sleep 3
+                done
+                # Known Issue:
+                #  'New size (nnnn extents) matches existing size'
+                # fall through to resize:
+                hybrid "$HDEV" resize max || true
+            else
 cat << EOF
 $(echo -e "$RED
     ---
-    The hybrid volume available size may not update now, run following
-    commands after the underlying raid device resync done:
+    The hybrid volume size doesn't update now, as the pv/raid device
+    is reshaping, run command when its done:
 
     sudo partprobe $(volume "$HDEV" devices)
     sudo pvresize $(volume "$HDEV" devices)
@@ -1132,12 +1158,10 @@ $(echo -e "$RED
     ---
 $NC")
 EOF
-            # Known Issue:
-            #  'New size (nnnn extents) matches existing size'
-            # fall through to resize:
-            hybrid "$HDEV" resize max || true
+            fi
             ;;
         resize) # resize [max|size]
+            # TODO: move to volume()
             local size="max"
             if test -n "$1"; then
                 size="$1"

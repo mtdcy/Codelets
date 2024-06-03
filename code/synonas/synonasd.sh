@@ -32,7 +32,7 @@ run_as_user() {
 info() { echo "== $(date '+%Y/%m/%d %H:%M:%S'): $NAME($$) $* == "; }
 
 # init
-./synonasctl.sh postinit setfanspeed sethosts iperfd
+./synonasctl.sh postinit setfanspeed iperfd
 
 #!! no space in filenames
 TARGETS=(
@@ -90,7 +90,7 @@ $(date '+%Y/%m/%d %H:%M:%S')
 
 ----
 
-$(tail -n 5 "Logs/$LOGFILE")
+$(tail -n 5 "$LOGFILE")
 EOF
         fi
     fi

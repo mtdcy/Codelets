@@ -1,2 +1,3 @@
+# path                          # mount point
 /volume1/homes                  /home
 /volume1/Workspace/Homebrew     /home/linuxbrew/.linuxbrew

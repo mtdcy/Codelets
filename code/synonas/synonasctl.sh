@@ -14,12 +14,13 @@ $name <commands ...>
 
 Supported commands:
 
-    postinit    - [*] perform post init after boot.
-    setfanspeed - [*] set fan speed based on /etc/synoinfo.conf.
-    sethosts    - [*] update /etc/hosts.
-    iperfd      - [ ] start iperf3 server @ 5201.
-    tracklists  - [*] update tracklists for Download Station.
-    cleanup     - [ ] perform clean action on system.
+    postinit        - [*] perform post init after boot.
+    setfanspeed     - [*] set fan speed based on /etc/synoinfo.conf.
+    sethosts        - [*] update /etc/hosts.
+    iperfd          - [ ] start iperf3 server @ 5201.
+    dockerd         - [*] setup dockerd.
+    trackerslist    - [*] update trackerslist for Download Station.
+    cleanup         - [ ] perform clean action on system.
 
 Notes:
     [*] root privilege required
@@ -27,7 +28,11 @@ Notes:
 EOF
 }
 
-COMMANDS=(postinit setfanspeed sethosts cleanup usage)
+echocmd() {
+    local cmd="${*//[[:space:]]+/ }"
+    echo -e "--$CYAN $cmd $NC"
+    eval -- "$cmd"
+}
 
 #REQUIREMENTS=(
 #    inotifywait
@@ -42,7 +47,7 @@ COMMANDS=(postinit setfanspeed sethosts cleanup usage)
 #for i in "${!REQUIREMENTS[@]}"; do
 #    if ! which "${REQUIREMENTS[$i]}"; then
 #        echo "== 请先安装${SYNOPKGS[$i]} =="
-#        synopkg install_from_server "${SYNOPKGS[$i]}" # working?
+#        echocmd synopkg install_from_server "${SYNOPKGS[$i]}" # working?
 #        which "${REQUIREMENTS[$i]}" || exit 1
 #    fi
 #done
@@ -73,7 +78,7 @@ postinit() {
     #  => https://www.suse.com/support/kb/doc/?id=000020581
     sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
-    # bridge network => cause performance issue, disable it
+    # bridge network filter => cause performance issue, disable it
     #modprobe br_netfilter
     #sysctl -w net.bridge.bridge-nf-call-iptables=1
     #sysctl -w net.bridge.bridge-nf-call-ip6tables=1
@@ -92,6 +97,10 @@ postinit() {
         ovs-vsctl add-port ovs_eth0 eth3 &&
         ovs-vsctl show
 
+    # ovs-vsctl add-bond ovs_eth0 bond23 eth2 eth3 lacp=active
+    # ovs-vsctl set port bond23 bond_mode=balance-slb
+    # ovs-appctl bond/show
+
     # enable promisc
     physdev=(ovs_eth0 eth0 eth1 eth2 eth3)
     for dev in "${physdev[@]}"; do
@@ -101,15 +110,15 @@ postinit() {
     info "setup cpufreq"
     # turbo boost
     echo 1 > /sys/devices/system/cpu/cpufreq/boost
-    # powersave or performance
+    # powersave performance userspace schedutil
     #  => powersave not saving power, why???
-    governor="performance"
-    cpuid=0
-    ncpu=$(grep -c processor /proc/cpuinfo)
-    while [ "$cpuid" -lt "$ncpu" ]; do
-        echo "$governor" > /sys/devices/system/cpu/cpu$cpuid/cpufreq/scaling_governor
-        cpuid=$((cpuid + 1))
-    done
+    #governor="performance"
+    #cpuid=0
+    #ncpu=$(grep -c processor /proc/cpuinfo)
+    #while [ "$cpuid" -lt "$ncpu" ]; do
+    #    echo "$governor" > /sys/devices/system/cpu/cpu$cpuid/cpufreq/scaling_governor
+    #    cpuid=$((cpuid + 1))
+    #done
 
     # 官方警告：不要在共享文件夹之外存放数据，否则升级时可能丢失
     info "setup mount points"
@@ -118,7 +127,7 @@ postinit() {
 
         mkdir -pv "$target"
         mount -v -o bind "$dir" "$target"
-    done < conf/bindings
+    done <<< "$(grep -v "^#" bindings | sed '/^$/d')"
 
     info "setup /etc/motd"
     echo -e "\nSynoNAS powered by M.2 x5\n" | tee /etc/motd
@@ -170,15 +179,21 @@ EOF
 }
 
 sethosts() {
-    FQDN="$(docker exec swag nginx -T 2>&1 | \
-            grep "server_name .*\.mtdcy.top" | \
-            sed 's/^.*server_name\s\+\(.*\.mtdcy\.top\).*$/\1/' | \
-            uniq | \
-            xargs)"
+    grep -v 127.0.0.1 /etc/hosts > /tmp/hosts-$$
 
-    sed -i '/127.0.0.1/d' /etc/hosts
-    echo "127.0.0.1 localhost" >> /etc/hosts
-    echo "127.0.0.1 $(hostname) $FQDN" >> /etc/hosts
+    {
+        printf "127.0.0.1 localhost\n"
+        printf "127.0.0.1 %s %s\n" \
+            "$(hostname)" \
+            "$(docker exec swag nginx -T 2>/dev/null | \
+                grep "^\s*[^#]\s*server_name .*\.mtdcy.top" | \
+                sed 's/^.*server_name\s\+\(.*\.mtdcy\.top\).*$/\1/' | \
+                uniq | \
+                xargs
+            )"
+    } >> /tmp/hosts-$$
+
+    mv /tmp/hosts-$$ /etc/hosts
     cat /etc/hosts
 }
 
@@ -186,6 +201,28 @@ iperfd() {
     pkill -f iperf3 || true
     iperf3 -s &
     echo "iperf3 server $! started"
+}
+
+dockerd() {
+  #"registry-mirrors":["https://registry.docker-cn.com"],
+cat > /var/packages/ContainerManager/etc/dockerd.json << EOF
+{
+  "hosts": ["unix:///var/run/docker.sock", "tcp://0.0.0.0:2375"],
+  "data-root": "/var/packages/ContainerManager/var/docker",
+  "storage-driver":"btrfs",
+  "log-driver":"syslog",
+  "log-opts": {
+    "syslog-address": "udp://127.0.0.1:514",
+    "syslog-format": "rfc5424",
+    "syslog-facility": "daemon",
+    "tag": "{{.Name}}/{{.ID}}"
+  }
+}
+EOF
+# https://docs.docker.com/config/containers/logging/syslog/
+# rfc3164 => BSD, rfc5424 => IETF
+
+echocmd synopkg restart ContainerManager & # takes time
 }
 
 cleanup() {
@@ -205,11 +242,11 @@ cleanup() {
             docker buildx prune --all --force --filter "until=168h"
         fi
 
-        info "cleanup Container log ..."
-        find Docker -name "log" -type d |
-            while read -r dir; do
-                find "$dir" -type f -mtime +30 -exec rm -fv {} \;
-            done
+        #info "cleanup Container log ..."
+        #find Docker -name "log" -type d |
+        #    while read -r dir; do
+        #        find "$dir" -type f -mtime +30 -exec rm -fv {} \;
+        #    done
     fi
 
     if which brew &> /dev/null; then
@@ -217,12 +254,13 @@ cleanup() {
         brew cleanup --prune=all
     fi
 
-    # mirrors.mtdcy.top
-    info "cleanup mirrors.mtdcy.top ..."
-    find "Docker/Web/data/caches/static" -type f -mtime +7 -exec rm -fv {} \;
-
-    info "cleanup pub.mtdcy.top/packages ..."
-    find "/volume1/public/packages" -size 0 -exec rm -rfv {} \;
+    while read -r path days; do
+        info "cleanup $path old than $days days..."
+        if [ "$days" -gt 0 ]; then
+            find "$path" -type f -mtime "+$days" -exec rm -fv {} \;
+        fi
+        find "$path" -size 0 -exec rm -rfv {} \;
+    done <<< "$(grep -v "^#" trashlist | sed '/^$/d')"
 }
 
 shr_sync_preinit() {
@@ -233,8 +271,8 @@ handle_commands() {
     echo "== handle $* =="
     for x in "$@"; do
         case "$x" in
-            tracklists)
-                ./scripts/install-ds-tracklists.sh
+            trackerslist)
+                ./synonas/install-trackerslist.sh
                 continue
                 ;;
             usage|help)
@@ -247,7 +285,9 @@ handle_commands() {
     done
 }
 
-info "start $@ ..."
+COMMANDS=(postinit setfanspeed sethosts iperfd dockerd cleanup usage)
+
+info "start $* ..."
 if [ $# -eq 0 ]; then
     PS3="Please select: "
     set -o posix # do not block trap

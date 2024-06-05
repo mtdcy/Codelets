@@ -9,9 +9,8 @@
 NAME="$(basename "$0")"
 
 # custom path(s)
-WORKDIR="/volume1/Workspace"
-NOTIFIER="$WORKDIR/Docker/Messages/chanify-sender.sh"
-LOGFILE="$WORKDIR/Logs/${NAME/%.sh/.log}"
+NOTIFIER="./notify.sh"
+LOGFILE="./Logs/${NAME/%.sh/.log}"
 PIDFILE=/var/run/synonasd.pid
 USER=mtdcy
 
@@ -37,9 +36,9 @@ info() { echo "== $(date '+%Y/%m/%d %H:%M:%S'): $NAME($$) $* == "; }
 #!! no space in filenames
 TARGETS=(
     /etc
-    "$WORKDIR/Docker/Web/swag/etc/letsencrypt/live/mtdcy.top/privkey.pem"
-    "$WORKDIR/Shares/uploads/data.ip"
-    "$WORKDIR/Shares/uploads/static"
+    #"./Docker/Web/swag/etc/letsencrypt/live/mtdcy.top/privkey.pem"
+    "./Shares/uploads/data.ip"
+    "./Shares/uploads/static"
 )
 
 info "start @ ${TARGETS[*]}"
@@ -60,13 +59,13 @@ while read -r target event file; do
             ;;
         */etc/letsencrypt/*)
             # takes long time
-            "$WORKDIR/Docker/Web/install-letsencrypt-cert.sh" &
+            ./Docker/Web/install-letsencrypt-cert.sh &
             ;;
         */uploads/data.ip/*)
-            run_as_user "$WORKDIR/Shares/uploads/install-ip2route-data.sh"
+            run_as_user ./Shares/uploads/install-ip2route-data.sh
             ;;
         */uploads/static/*)
-            run_as_user "$WORKDIR/Shares/uploads/install-static.sh"
+            run_as_user ./Shares/uploads/install-static.sh
             ;;
     esac
 done & # run in background, or inotifywait will block trap

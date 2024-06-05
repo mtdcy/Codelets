@@ -19,7 +19,6 @@ Supported commands:
     sethosts        - [*] update /etc/hosts.
     iperfd          - [ ] start iperf3 server @ 5201.
     dockerd         - [*] setup dockerd.
-    trackerslist    - [*] update trackerslist for Download Station.
     cleanup         - [ ] perform clean action on system.
 
 Notes:
@@ -89,13 +88,16 @@ postinit() {
     # => also need to `export TZ=$(cat /etc/TZ)` in .profile for `date` to work properly
 
     info "setup ovs bridge"
-    ovs-vsctl del-br ovs_eth1 &&
-        ovs-vsctl del-br ovs_eth2 &&
-        ovs-vsctl del-br ovs_eth3 &&
-        ovs-vsctl add-port ovs_eth0 eth1 &&
-        ovs-vsctl add-port ovs_eth0 eth2 &&
-        ovs-vsctl add-port ovs_eth0 eth3 &&
-        ovs-vsctl show
+    ovs-vsctl del-br ovs_eth1
+    ovs-vsctl del-br ovs_eth2
+    ovs-vsctl del-br ovs_eth3
+
+    ovs-vsctl add-port ovs_eth0 eth1
+    ovs-vsctl add-port ovs_eth0 eth2
+    ovs-vsctl add-port ovs_eth0 eth3
+
+    ovs-vsctl show
+    #ovs-dpctl show
 
     # ovs-vsctl add-bond ovs_eth0 bond23 eth2 eth3 lacp=active
     # ovs-vsctl set port bond23 bond_mode=balance-slb
@@ -123,6 +125,7 @@ postinit() {
     # 官方警告：不要在共享文件夹之外存放数据，否则升级时可能丢失
     info "setup mount points"
     while read -r dir target; do
+        #umount "$target" 2>/dev/null || true
         is_mounted "$target" && continue
 
         mkdir -pv "$target"
@@ -254,10 +257,11 @@ cleanup() {
         brew cleanup --prune=all
     fi
 
-    while read -r path days; do
-        info "cleanup $path old than $days days..."
+    while read -r path days time; do
+        time="${time:-mtime}"
+        info "cleanup $path old than $days days($time)..."
         if [ "$days" -gt 0 ]; then
-            find "$path" -type f -mtime "+$days" -exec rm -fv {} \;
+            find "$path" -type f "-$time" "+$days" -exec rm -fv {} \;
         fi
         find "$path" -size 0 -exec rm -rfv {} \;
     done <<< "$(grep -v "^#" trashlist | sed '/^$/d')"
@@ -271,10 +275,6 @@ handle_commands() {
     echo "== handle $* =="
     for x in "$@"; do
         case "$x" in
-            trackerslist)
-                ./synonas/install-trackerslist.sh
-                continue
-                ;;
             usage|help)
                 usage
                 continue

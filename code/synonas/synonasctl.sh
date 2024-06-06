@@ -257,6 +257,7 @@ cleanup() {
         brew cleanup --prune=all
     fi
 
+    local trashrc="${1:-trashrc}"
     while read -r path days time; do
         time="${time:-mtime}"
         info "cleanup $path old than $days days($time)..."
@@ -264,7 +265,7 @@ cleanup() {
             find "$path" -type f "-$time" "+$days" -exec rm -fv {} \;
         fi
         find "$path" -size 0 -exec rm -rfv {} \;
-    done <<< "$(grep -v "^#" trashlist | sed '/^$/d')"
+    done <<< "$(grep -v "^#" "$trashrc" | sed '/^$/d')"
 }
 
 shr_sync_preinit() {

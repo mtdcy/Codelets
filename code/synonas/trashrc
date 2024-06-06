@@ -1,0 +1,8 @@
+# path                                  # days      # mtime(default)|atime|ctime
+/volume1/docker/Web/data/caches/static  7           atime
+/volume1/docker/Web/swag/log            7           mtime
+/volume1/docker/Web/alist/log           7           mtime
+/volume1/docker/Web/chanify/data/files  90          mtime
+
+# cleanup empty files only
+/volume1/public/packages/               0

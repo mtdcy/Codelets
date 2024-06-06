@@ -18,14 +18,15 @@ USER=mtdcy
 
 cd "$(dirname "$0")" || true
 
-mkdir -pv "$(dirname "$LOGFILE")"
-exec 1> >(tee -a "$LOGFILE") 2>&1
+#mkdir -pv "$(dirname "$LOGFILE")"
+#exec 1> >(tee -a "$LOGFILE") 2>&1
 
 [ -f $PIDFILE ] && pkill --pidfile $PIDFILE
 echo $$ > $PIDFILE
 
+# run_as_user <username> commands ...
 run_as_user() {
-    sudo -u $USER "$@"
+    sudo -u "$1" "${@:2}"
 }
 
 info() { echo "== $(date '+%Y/%m/%d %H:%M:%S'): $NAME($$) $* == "; }
@@ -33,52 +34,61 @@ info() { echo "== $(date '+%Y/%m/%d %H:%M:%S'): $NAME($$) $* == "; }
 # init
 ./synonasctl.sh postinit setfanspeed iperfd
 
-#!! no space in filenames
-TARGETS=(
-    /etc
-    #"./Docker/Web/swag/etc/letsencrypt/live/mtdcy.top/privkey.pem"
-    "./Shares/uploads/data.ip"
-    "./Shares/uploads/static"
-)
+info "$0 start"
 
-info "start @ ${TARGETS[*]}"
+watchrc="${1:-watchrc}"
 
-inotifywait --exclude '\.db' -q -r -m -e close_write,move,delete "${TARGETS[@]}" |
+IFS=' ' read -r -a LIST <<< "$(grep -v '^#' "$watchrc" | sed '/^$/d' | awk '{print $1}' | xargs)"
+
+# attrib: file been replaced
+inotifywait -q -r -m \
+    -e modify,attrib,close_write,move,delete \
+    "$watchrc" "${LIST[@]}" |
 while read -r target event file; do
     info "event > $target $event $file"
-    case "$target" in
-        /etc*)
-            case "$file" in
-                synoinfo.conf)
-                    ./synonasctl.sh setfanspeed
-                    ;;
-                hosts)
-                    ./synonasctl.sh sethosts
-                    ;;
-            esac
-            ;;
-        */etc/letsencrypt/*)
-            # takes long time
-            ./Docker/Web/install-letsencrypt-cert.sh &
-            ;;
-        */uploads/data.ip/*)
-            run_as_user ./Shares/uploads/install-ip2route-data.sh
-            ;;
-        */uploads/static/*)
-            run_as_user ./Shares/uploads/install-static.sh
-            ;;
-    esac
+
+    if [ "$target" = "$watchrc" ]; then
+        info "$NAME $watchrc updated, restart..."
+        exec "$0" "$@"
+    fi
+
+    IFS=' ' read -r _ action username <<< "$(grep -Fw "$target" "$watchrc")"
+    if [ -f "$action" ]; then
+        if test -n "$username"; then
+            info "run $action as $username"
+            run_as_user "$username" "$action"
+        else
+            info "run $action"
+            $SHELL "$action"
+        fi
+    elif test -n "$action"; then
+        if test -n "$username"; then
+            info "run synonasctl.sh $action as $username"
+            run_as_user "$username" ./synonasctl.sh "$action"
+        else
+            info "run synonasctl.sh $action"
+            $SHELL synonasctl.sh "$action"
+        fi
+    fi
+
+    # ugly code: 'attrib' only work the first time
+    #  => solution: force reload
+    if [ "$event" = "ATTRIB" ]; then
+        sleep 3
+        exec "$0" "$@"
+    fi
 done & # run in background, or inotifywait will block trap
+BG=$!
 
 #=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=#
 # post processing
 cleanup() {
     info "stopped, cleanup < $*"
-    kill -9 $(jobs -p) 2> /dev/null
+    kill -9 $(jobs -p | xargs) 2> /dev/null
 
     PID=$(cat "$PIDFILE")
 
-    if [ $$ -eq "$PID" ] || ! ps -p "$PID" > /dev/null; then
+    if [ $$ -eq "$PID" ]; then
         info "stopped, notify clients ..."
 
         if test -n "$NOTIFIER"; then
@@ -103,7 +113,6 @@ trap_signal() {
 }
 trap_signal cleanup EXIT
 
-while test -n "$(jobs)"; do
-    info "wait for background jobs ..."
-    wait
-done
+sleep 3
+info "$NAME wait for background jobs $(jobs -p | xargs)..."
+wait $BG

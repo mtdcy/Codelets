@@ -1,0 +1,6 @@
+# watch path (absolute)                 # run                                               # user
+/etc/synoinfo.conf                      setfanspeed
+/volume1/共享空间/uploads/data.ip/      /volume1/共享空间/uploads/install-ip2route-data.sh  mtdcy
+/volume1/共享空间/uploads/static/       /volume1/共享空间/uploads/install-static.sh         mtdcy
+
+# 文件夹必须以'/'结尾

@@ -790,7 +790,8 @@ volume() {
     case "$command" in
         status)
             [ -b "$LVDEV" ] || return 1
-            echocmd vgdisplay "$VGNAME" -S lvname="$LVNAME"
+            #echocmd vgdisplay "$VGNAME" -S lvname="$LVNAME"
+            echocmd lvdisplay "$LVDEV" --maps
             ;;
         size) # size
             #[ -b "$LVDEV" ] || return 0 #
@@ -881,7 +882,8 @@ volume() {
             fi
             ;;
         add) # add devices ...
-            echocmd pvcreate "$@"
+            # zfs_member signature detected on ...
+            yes | echocmd pvcreate "$@"
             echocmd vgextend "$VGNAME" "$@"
 
             # not all filesystem support resizefs with lvextend

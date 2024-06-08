@@ -1112,7 +1112,7 @@ EOF
                     "$disk"                             \
                     "$(to_iec "$dsz")"                  \
                     "$(to_iec_MB "$dsz" | from_iec)"
-            done | sort -k 2 -n -s > "$diskinfo"
+            done | sort -k 3 -n -s > "$diskinfo"
 
             # update hybrid volume topology
             for pv in $(volume "$HDEV" devices); do
@@ -1124,7 +1124,7 @@ EOF
 
             #!! descend by part size, so match biggest part first !!#
             local descend
-            descend="$(sort -k 2 -nr -s < "$topoinfo")"
+            descend="$(sort -k 3 -nr -s < "$topoinfo")"
 
             while read -r disk _ dsz; do
                 while read -r pv _ psz; do
@@ -1138,6 +1138,16 @@ EOF
                 # disk remains size
                 printf "%s %s %s\n" "$disk" "$(to_iec "$dsz")" "$dsz"
             done < "$diskinfo" > "$diskinfo.1"
+
+            ## append with remains size
+            for disk in $(hybrid "$HDEV" devices); do
+                local dsz
+                dsz="$(disk "$disk" size free)"
+                printf "%s %s %s\n"                     \
+                    "$disk"                             \
+                    "$(to_iec "$dsz")"                  \
+                    "$(to_iec_MB "$dsz" | from_iec)"
+            done >> "$diskinfo.1"
 
             map_disks_to_raid < "$diskinfo.1" >> "$topoinfo"
 
@@ -1235,7 +1245,7 @@ map_disks_to_raid() {
     local diskinfo
 
     # ascend disks info <pipe>
-    diskinfo="$(sort -k 2 -n -s)"
+    diskinfo="$(sort -k 3 -n -s)"
 
     local mdno=0
     while test -b "/dev/md$mdno"; do

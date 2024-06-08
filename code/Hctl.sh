@@ -523,10 +523,10 @@ EOF
 
     case "$command" in
         status) # status
-            echocmd mdadm --query --detail "$MDDEV"
+            echocmd mdadm --detail "$MDDEV"
             ;;
         test)
-            echocmd mdadm --detail --test "$MDDEV"
+            echocmd mdadm --manage --test "$MDDEV"
             ;;
         mount) # mount [mountpint]
             disk "$MDDEV" mount "$@"
@@ -559,6 +559,18 @@ EOF
                     to_iec "$size"K
                     ;;
             esac
+            ;;
+        inspect)
+            local dev="/sys/block/$(basename "$MDDEV")"
+            local prop=(
+                "$dev/queue/read_ahead_kb"
+                "$dev/md/stripe_cache_size"
+                "$dev/md/sync_max"
+                "$dev/md/sync_force_parallel"
+            )
+            for p in "${prop[@]}"; do
+                echo "$(basename "$p"): " "$(cat "$p")"
+            done
             ;;
         create) # create [level] [fstype] partitions ...
             local mindev fstype

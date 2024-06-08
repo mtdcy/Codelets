@@ -406,7 +406,6 @@ EOF
                             echocmd resize2fs "$DISK" "$size"
                             ;;
                     esac
-                    echocmd e2fsck -f "$DISK"
                     if test -n "$mounted"; then
                         echocmd mount -t "$fstype" "$DISK" "$mounted"
                     fi
@@ -432,8 +431,29 @@ EOF
                         umount "$mounted"
                         rm -rf "$mounted"
                     fi
+                    ;;
+                *)
+                    error "$DISK: unsupported fstype $fstype"
+                    return 1
+                    ;;
+            esac
 
-                    # fsck
+            # pass through
+            disk "$DISK" fsck
+            ;;
+        fsck)
+            if [ "$DISKTYPE" = "disk" ]; then
+                error "$DISK: unsupported device type($DISKTYPE)"
+                return 1
+            fi
+
+            local fstype
+            fstype="$(disk "$DISK" fstype)"
+            case "$fstype" in
+                ext2|ext3|ext4)
+                    echocmd e2fsck -f "$DISK"
+                    ;;
+                btrfs)
                     echocmd btrfs check --force "$DISK"
                     ;;
                 *)

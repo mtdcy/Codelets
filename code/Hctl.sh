@@ -1021,6 +1021,29 @@ hybrid() {
                 printf "\n"
             done
             ;;
+        tune)
+            local udev=/etc/udev/rules.d/69-hdparm.rules
+            for disk in $(hybrid "$HDEV" devices); do
+                info "--- $disk: current settings ---"
+                hdparm -C "$disk" | sed -n '3p'     # Mode
+                hdparm -B "$disk" | sed -n '3p'     # APM level
+                hdparm -W "$disk" | sed -n '3p'     # Write cache
+                # standby timeout cannot be queried
+
+                info "--- $disk: disable spindown/standby mode ---"
+                # some may not support APM like Western Digital Red
+                echocmd hdparm -B 254 -S 0 "$disk" 2>/dev/null
+                echocmd hdparm -W 1 "$disk"
+
+                sed -i "/$(basename "$disk")/d" "$udev"
+                cat << EOF >> "$udev"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="$(basename "$disk")", RUN+="$(which hdparm) -B 254 -S 0 $disk"
+EOF
+            done
+            info "--- current udev rules ---"
+            cat "$udev"
+            return 0
+            ;;
         size) # size [total|free], default: total
             volume "$HDEV" size "$@"
             ;;

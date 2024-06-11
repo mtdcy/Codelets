@@ -167,6 +167,8 @@ disk() {
     DISKNAME="$(basename "$DISK")"
     DISKTYPE="$(lsblk "$DISK" -o TYPE 2> /dev/null | sed -n '2p')"
 
+    local mounted
+    mounted="$(lsblk -o MOUNTPOINT "$DISK" | sed -n '2p')"
     case "$command" in
         status) # status [verbose]
             info "status of $DISK ($(cat "/sys/block/$DISKNAME/device/state"))"
@@ -324,6 +326,29 @@ EOF
                 disk "$part" fstype "$fstype"
             fi
             ;;
+        offline)
+            if [ "$DISKTYPE" = "disk" ]; then
+                prompt "$DISK: offline the disk?" false ans
+                ans_is_true "$ans" || return 1
+                echo offline > "/sys/block/$DISKNAME/device/state"
+
+cat << EOF
+
+    ---
+    Offline the disk will cause mdadm enter degraded mode.
+
+    Continue to remove the disk phycally and replace with a new one.
+
+    Add the new disk with: '$NAME /dev/vg0/volume0 add /dev/sdX', or
+
+    Fix the mdadm with '$NAME raid /dev/md0 add /dev/sdX1'
+    ---
+EOF
+            else
+                error "$DISK: unsupported device type($DISKTYPE)"
+                return 1
+            fi
+            ;;
         delete) # delete [part]
             if [ "$DISKTYPE" = "part" ] || [ -n "$1" ]; then
                 local part pno
@@ -385,9 +410,8 @@ EOF
             fi
 
             local size="$1"
-            local fstype mounted
+            local fstype
             fstype="$(disk "$DISK" fstype)"
-            mounted="$(lsblk -o MOUNTPOINT "$DISK" | sed -n '2p')"
             case "$fstype" in
                 ext2|ext3|ext4)
                     if test -n "$mounted"; then
@@ -454,7 +478,39 @@ EOF
                     echocmd e2fsck -f "$DISK"
                     ;;
                 btrfs)
-                    echocmd btrfs check --force "$DISK"
+                    echocmd btrfs check --force "$DISK" || {
+                        echocmd btrfs rescue super-recover -v "$DISK"
+                        echocmd btrfs rescue zero-log "$DISK"
+                        # fall through
+                        disk "$DISK" scrub
+                    }
+                    ;;
+                *)
+                    error "$DISK: unsupported fstype $fstype"
+                    return 1
+                    ;;
+            esac
+            ;;
+        scrub) # [start|status], default start
+            if [ "$DISKTYPE" = "disk" ]; then
+                error "$DISK: unsupported device type($DISKTYPE)"
+                return 1
+            fi
+
+            local fstype
+            fstype="$(disk "$DISK" fstype)"
+            case "$fstype" in
+                btrfs)
+                    if [ "$1" = status ]; then
+                        echocmd btrfs scrub status "$DISK"
+                    else
+                        info "$DISK: start btrfs scrub"
+                        if btrfs scrub status "$DISK" | grep -Fw 'interrupted' &>/dev/null; then
+                            echocmd btrfs scrub resume "$DISK"
+                        else
+                            echocmd btrfs scrub start "$DISK"
+                        fi
+                    fi
                     ;;
                 *)
                     error "$DISK: unsupported fstype $fstype"
@@ -645,6 +701,7 @@ EOF
             ;;
         add) # add [spare] partitions ...
             #!! replace failed devices or grow the raid !!#
+            # TODO: check partition size before add
             local spare
             case "$1" in
                 spare)  spare=true; shift ;;
@@ -1292,6 +1349,26 @@ EOF
             error "TODO: delete device from hybrid volume"
             # => may have to move data around
             return 1
+            ;;
+        fsck)
+            echofunc disk "$HDEV" fsck
+            ;;
+        snapshot) # [create|list], default create
+            local fstype mountpoint
+            fstype="$(disk "$HDEV" fstype)"
+            mountpoint="$(disk "$HDEV" mount)"
+            case "$fstype" in
+                btrfs)
+                    if [ "$1" = list ]; then
+                        echocmd btrfs subvolume list "$mountpoint"
+                    else
+                        echocmd btrfs subvolume snapshot "$mountpoint" "$mountpoint/@snapshot_$(date '+%Y%m%d_%H%M')"
+                    fi
+                    ;;
+                *)
+                    warn "TODO: add snapshot support for $fstype"
+                    ;;
+            esac
             ;;
         *)
             error "unknown command $command"

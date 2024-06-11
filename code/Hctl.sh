@@ -505,11 +505,14 @@ EOF
                         echocmd btrfs scrub status "$DISK"
                     else
                         info "$DISK: start btrfs scrub"
-                        if btrfs scrub status "$DISK" | grep -Fw 'interrupted' &>/dev/null; then
-                            echocmd btrfs scrub resume "$DISK"
-                        else
-                            echocmd btrfs scrub start "$DISK"
-                        fi
+                        case "$(btrfs scrub status "$DISK" | grep -Fw 'Status:' | awk '{print $NF}')" in
+                            interrupted|aborted)
+                                echocmd btrfs scrub resume "$DISK"
+                                ;;
+                            *)
+                                echocmd btrfs scrub start "$DISK"
+                                ;;
+                        esac
                     fi
                     ;;
                 *)

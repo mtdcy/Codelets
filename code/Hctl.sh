@@ -1041,6 +1041,17 @@ ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="$(basename "$disk")", RUN+="$
 EOF
             done
             info "--- current udev rules ---"
+cat << EOF
+
+    ---
+    tools or settings may affect disk spindown/standby mode
+
+    1. tuned    - always standby disk and take seconds to wakeup
+
+    Verify: wait for minutes and exec 'find /path/to/volume/mountpoint'
+    ---
+
+EOF
             cat "$udev"
             return 0
             ;;

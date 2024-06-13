@@ -1,4 +1,4 @@
-#!/bin/bash -ex
+#!/bin/bash -e
 
 while [ $# -gt 0 ]; do
     par="$1"; shift
@@ -24,38 +24,41 @@ pidfile=/run/sshtun.pid
 pkill --pidfile "$pidfile" || true
 echo "$$" > /run/sshtun.pid
 
-# enable sshd tunnel
-if ! sshd -T | grep -q -i 'PermitTunnel yes'; then
-    echo 'PermitTunnel yes' >> /etc/ssh/sshd_config
-    systemctl restart sshd
-fi
-
-# setup tun device
+# setup tun device if not exists
+#  => openwrt: setup tun device with webui
 dev=tun0
 if ! ip link show "$dev"; then
     ip tuntap add "$dev" mode tun
     ip link set dev "$dev" up
+
+    # setup ip & route
+    ip addr flush dev "$dev" || true
+    if [ "$mode" = "server" ]; then
+        ip addr add "$gw/24" dev "$dev"
+    else
+        ip addr add "$ip/24" dev "$dev"
+    fi
+    ip route add "$net" via "$ip" || true
 fi
 
-# setup ip & route
-ip addr flush dev "$dev" || true
 if [ "$mode" = "server" ]; then
-    ip addr add "$gw/24" dev "$dev"
-else
-    ip addr add "$ip/24" dev "$dev"
-fi
-ip route add "$net" via "$ip" || true
-
-if [ "$mode" = "server" ]; then
+    # enable sshd tunnel
+    if ! sshd -T | grep -q -i 'PermitTunnel yes'; then
+        echo 'PermitTunnel yes' >> /etc/ssh/sshd_config
+        systemctl restart sshd
+    fi
     exit
 fi
 
-ssh -v -N                     \
-    -o Tunnel=point-to-point  \
-    -o ServerAliveInterval=10 \
-    -o TCPKeepAlive=yes       \
+# debug with '-v'
+ssh -v -N                       \
+	-F none 					\
+    -o TCPKeepAlive=yes         \
+    -o ServerAliveInterval=10   \
+    -o ServerAliveCountMax=3 	\
+    -o Tunnel=point-to-point    \
     -w "${dev#tun}:0"           \
-    "${opt[@]}"               \
+    "${opt[@]}"                 \
     -p "$port" "$user@$host" &
 job=$!
 

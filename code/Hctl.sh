@@ -579,8 +579,9 @@ EOF
         return 1
     fi
 
-    local MDINFO MDLEVEL
+    local MDBASE MDINFO MDLEVEL
     if [ -b "$MDDEV" ]; then
+        MDBASE="/sys/block/$(basename "$MDDEV")/md"
         MDINFO="$(mdadm --detail "$MDDEV")"
         MDLEVEL="$(grep -F 'Raid Level :' <<< "$MDINFO" | awk '{print $NF}')"
     fi
@@ -834,21 +835,38 @@ EOF
             #echocmd mdadm --action "check" "$MDDEV" || true
             raid "$MDDEV" check || true
             ;;
-        check) # check <start|stop>, default: start
+        check) # check <start|stop>, default: start, io sched: idle/low/high/...
             case "$1" in
                 status)
-                    echocmd "cat /sys/block/$(basename "$MDDEV")/md/mismatch_cnt"
+                    echocmd "cat $MDBASE/mismatch_cnt"
                     ;;
                 stop)
-                    echocmd "echo idle > /sys/block/$(basename "$MDDEV")/md/sync_action"
-                    #echocmd mdadm --action "idle" "$MDDEV"
+                    echocmd "echo idle > $MDBASE/sync_action"
                     ;;
-                repair)
-                    echocmd mdadm --action "repair" "$MDDEV"
-                    ;;
-                start|*)
-                    echocmd "echo check > /sys/block/$(basename "$MDDEV")/md/sync_action"
-                    #echocmd mdadm --action "check" "$MDDEV"
+                start|repair|*)
+                    local action ionice renice pid
+                    [ "$1" = "repair" ] && action=repair || action=check
+
+                    if ! [ "$(cat $MDBASE/sync_action)" = "$action" ]; then
+                        echocmd "echo $action > $MDBASE/sync_action"
+                    fi
+
+                    # borrow from debian:/usr/share/mdadm/checkarray
+                    case "$2" in
+                        idle)   ionice='-c3'     ; renice=15 ;;
+                        low)    ionice='-c2 -n7' ; renice=5  ;;
+                        high)   ionice='-c2 -n0' ; renice=0  ;;
+                    esac
+
+                    if test -n "$ionice"; then
+                        sleep 3
+                        pid=$(pgrep -f "\\[$(basename "$MDDEV")_resync\\]")
+                        if test -n "$pid"; then
+                            info "$MDDEV: selecting $2 I/O scheduling class and $renice niceness for resync."
+                            echocmd ionice $ionice -p "$pid" || true
+                            echocmd renice -n $renice -p "$pid" || true
+                        fi
+                    fi
                     ;;
             esac
             ;;

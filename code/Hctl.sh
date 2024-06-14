@@ -953,6 +953,7 @@ volume() {
                 fi
             done
 
+            # create vg if not exists
             if ! lvs "$VGNAME" 2> /dev/null; then
                 echocmd pvcreate --quiet "$@" || true
                 echocmd vgcreate --quiet "$VGNAME" "$@"
@@ -1043,24 +1044,24 @@ hybrid() {
     case "$1" in
         ls)
             local name size type misc
-            local OPTS="NAME,SIZE,TYPE,MOUNTPOINTS,FSTYPE,UUID"
+            local OPTS="NAME,SIZE,TYPE"
             printf "%-14s %7s %7s %s\n" "NAME" "SIZE" "TYPE" "MISC"
 
             for lv in $(lvs --noheadings -o lv_path | xargs); do
                 IFS=' ' read -r name size type misc <<< "$( \
-                    lsblk -o "$OPTS" "$lv" | sed -n '2p'    \
+                    lsblk -o "$OPTS,MOUNTPOINTS,FSTYPE" "$lv" | sed -n '2p'    \
                 )"
                 printf "%-14s %7s %7s %s\n" "$name" "$size" "$type" "$misc"
                 for pv in $(volume "$lv" devices); do
                     # ls phy volume/raid device
                     IFS=' ' read -r name size type misc <<< "$( \
-                        lsblk -o "$OPTS" "$pv" | sed -n '2p'    \
+                        lsblk -o "$OPTS,UUID" "$pv" | sed -n '2p'    \
                     )"
                     printf "├─%-12s %7s %7s %s\n" "$name" "$size" "$type" "$misc"
                     for part in $(raid "$pv" devices); do
                         # ls raid parts
                         IFS=' ' read -r name size type misc <<< "$( \
-                            lsblk -o "$OPTS" "$part" | sed -n '2p'  \
+                            lsblk -o "$OPTS,PARTLABEL" "$part" | sed -n '2p'  \
                         )"
                         printf "│ ├─%-10s %7s %7s %s\n" "$name" "$size" "$type" "$misc"
                     done
@@ -1107,6 +1108,15 @@ hybrid() {
         tune)
             local udev=/etc/udev/rules.d/69-hdparm.rules
             for disk in $(hybrid "$HDEV" devices); do
+                info "
+    ---
+    Ubuntu Desktop enables disk APM with a very low value, but
+    Ubuntu Server disables it by default.
+    ---
+    "
+                prompt "Continue?" true ans
+                ans_is_true "$ans" || return 1
+
                 info "--- $disk: current settings ---"
                 hdparm -C "$disk" | sed -n '3p'     # Mode
                 hdparm -B "$disk" | sed -n '3p'     # APM level
@@ -1388,7 +1398,8 @@ EOF
                     if [ "$1" = list ]; then
                         echocmd btrfs subvolume list "$mountpoint"
                     else
-                        echocmd btrfs subvolume snapshot "$mountpoint" "$mountpoint/@snapshot_$(date '+%Y%m%d_%H%M')"
+                        echocmd btrfs subvolume snapshot "$mountpoint" \
+                            "$mountpoint/.snapshots/@snapshot~$(date '+%Y%m%d-%H%M')"
                     fi
                     ;;
                 *)
@@ -1501,3 +1512,5 @@ case "$1" in
         echofunc hybrid "$@"
         ;;
 esac
+
+# vim:ft=sh:syntax=bash:ff=unix:fenc=utf-8:et:ts=4:sw=4:sts=4

@@ -167,7 +167,8 @@ disk() {
     DISKNAME="$(basename "$DISK")"
     DISKTYPE="$(lsblk "$DISK" -o TYPE 2> /dev/null | sed -n '2p')"
 
-    local mounted
+    local fstype mounted
+    fstype="$(grep ' [0-9]\+ ' <<< "$DISKINFO" | awk '{print $5}')" || true
     mounted="$(lsblk -o MOUNTPOINT "$DISK" | sed -n '2p')"
     case "$command" in
         status) # status [verbose]
@@ -223,7 +224,15 @@ disk() {
             if [ $# -gt 0 ]; then
                 umount "$DISK" 2>/dev/null || true
                 sed -i "\|^$DISK|d" /etc/fstab
-                echo "$DISK $1 auto defaults,nofail 0 0" >> /etc/fstab
+                case "$fstype" in
+                    btrfs)
+                        # autodefrag for HDD
+                        echo "$DISK $1 auto defaults,nofail,autodefrag 0 0" >> /etc/fstab
+                        ;;
+                    *)
+                        echo "$DISK $1 auto defaults,nofail 0 0" >> /etc/fstab
+                        ;;
+                esac
                 mkdir -pv "$1"
                 which systemctl &>/dev/null && systemctl daemon-reload || true
                 mount "$DISK"
@@ -328,15 +337,13 @@ EOF
             ;;
         offline)
             if [ "$DISKTYPE" = "disk" ]; then
-                prompt "$DISK: offline the disk?" false ans
+                prompt "$DISK: offline disk will also remove parts from mdadm, continue?" false ans
                 ans_is_true "$ans" || return 1
                 echo offline > "/sys/block/$DISKNAME/device/state"
 
 cat << EOF
 
     ---
-    Offline the disk will cause mdadm enter degraded mode.
-
     Continue to remove the disk phycally and replace with a new one.
 
     Add the new disk with: '$NAME /dev/vg0/volume0 add /dev/sdX', or
@@ -388,7 +395,7 @@ EOF
             fi
 
             if [ -z "$1" ]; then
-                grep ' [0-9]\+ ' <<< "$DISKINFO" | awk '{print $5}' || true
+                echo "$fstype"
             else
                 case "$1" in
                     btrfs)
@@ -410,8 +417,6 @@ EOF
             fi
 
             local size="$1"
-            local fstype
-            fstype="$(disk "$DISK" fstype)"
             case "$fstype" in
                 ext2|ext3|ext4)
                     if test -n "$mounted"; then

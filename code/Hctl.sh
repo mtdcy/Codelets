@@ -906,7 +906,8 @@ volume() {
         status)
             [ -b "$LVDEV" ] || return 1
             #echocmd vgdisplay "$VGNAME" -S lvname="$LVNAME"
-            echocmd lvdisplay "$LVDEV" --maps
+            #echocmd lvdisplay "$LVDEV" --maps
+            echocmd lvs --all --options +devices "$VGNAME" -S lvname="$LVNAME"
             ;;
         size) # size
             #[ -b "$LVDEV" ] || return 0 #

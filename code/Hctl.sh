@@ -91,21 +91,21 @@ par_is_raidlevel() {
 
 # for print
 to_iec() {
-    local sz="${1^^%B}"
-    if [ $# -eq 0 ]; then read -r sz; fi
+    local sz="${1:-$(cat)}"
+    sz="${sz^^%B}"
     numfmt --from iec --to iec --round=down --format='%.2f' "$sz"
 }
 
 # mainly for disk size related ops
 to_iec_MB() {
-    local sz="${1^^%B}"
-    if [ $# -eq 0 ]; then read -r sz; fi
+    local sz="${1:-$(cat)}"
+    sz="${sz^^%B}"
     echo "$(($(numfmt --from iec "${1%B}") / 1048576))M"
 }
 
 to_iec_100MB() {
-    local sz="${1^^%B}"
-    if [ $# -eq 0 ]; then read -r sz; fi
+    local sz="${1:-$(cat)}"
+    sz="${sz^^%B}"
     sz="$(numfmt --from iec "$sz")"
     sz="$(((sz / 104857600) * 100))"
     echo "$sz"M
@@ -113,8 +113,8 @@ to_iec_100MB() {
 
 # from iec to Bytes, for size math
 from_iec() {
-    local sz="${1^^%B}"
-    if [ $# -eq 0 ]; then read -r sz; fi
+    local sz="${1:-$(cat)}"
+    sz="${sz^^%B}"
     numfmt --from iec "$sz"
 }
 

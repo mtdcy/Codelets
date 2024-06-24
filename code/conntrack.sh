@@ -119,7 +119,7 @@ if [ ! -z "$host4" ] || [ -z "$host" ]; then
             conntrack -f ipv4 -L -r $line 2> /dev/null || true  # match reply source
             conntrack -f ipv4 -L -q $line 2> /dev/null || true  # match reply destination
         done <<< "$host4"
-    fi | format_lines | sort -u | grep -v "127.0.0.1"
+    fi | grep -v "127.0.0.1" | format_lines
     echo ""
 fi
 
@@ -136,6 +136,6 @@ if [ ! -z "$host6" ] || [ -z "$host" ]; then
             conntrack -f ipv6 -L -r $line 2> /dev/null || true  # match reply source
             conntrack -f ipv6 -L -q $line 2> /dev/null || true  # match reply destination
         done <<< "$host6"
-    fi | format_lines | sort -u | grep -v "::1"
+    fi | grep -v "::1" | format_lines
     echo ""
 fi

@@ -5,7 +5,7 @@
 * [conntrack.sh](code/conntrack.sh) - A pretty network connection track script.
 * [photoi.sh](code/photoi.sh) - A photo import and organize script.
 * [Dperf.sh](code/Dperf.sh) - Disk performance benchmart script.
-* [Hctl.sh](code/Hctl.sh) - Hybrid raid control script.
+* [HRctl.sh](code/HRctl.sh) - Hybrid Raid control script.
 * [sshtun.sh](code/sshtun.sh) - [A ssh tunnel setup script](docs/sshtunnel.md).
 * [synonasctl.sh](code/synonas/synonasctl.sh) - A synology nas control script.
 * [synonasd.sh](code/synonas/synonasd.sh) - A synology nas monitor script.

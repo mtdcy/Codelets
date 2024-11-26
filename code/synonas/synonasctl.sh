@@ -68,6 +68,14 @@ postinit() {
     sysctl -w fs.inotify.max_user_watches=1048576 # [8192, 1048576] since 5.11
     sysctl -w vm.swappiness=1 # default 10
 
+    # https://github.com/quic-go/quic-go/wiki/UDP-Buffer-Sizes
+    # https://github.com/xtaci/kcptun#quickstart
+    sysctl -w net.core.rmem_max=26214400
+    sysctl -w net.core.rmem_default=26214400
+    sysctl -w net.core.wmem_max=26214400
+    sysctl -w net.core.wmem_default=26214400
+    sysctl -w net.core.netdev_max_backlog=2048
+
     sysctl -w net.ipv4.ip_forward=1
     sysctl -w net.ipv4.tcp_tw_reuse=1
     sysctl -w net.ipv4.tcp_fastopen=3 # FTO: tcp fast open

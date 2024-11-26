@@ -1,3 +1,5 @@
 # path                          # mount point
 /volume1/homes                  /home
-/volume1/Workspace/Homebrew     /home/linuxbrew/.linuxbrew
+/volume1/homes/mtdcy/Homebrew   /home/linuxbrew/.linuxbrew
+
+/volume1/共享空间/系统维护/ISO  /volume1/public/iso

@@ -1,0 +1,39 @@
+FROM    ubuntu:22.04
+LABEL   maintainer="mtdcy.chen@gmail.com"
+
+# ENV & ARG variables
+ARG MIRROR=""
+ARG TZ=Asia/Shanghai
+ARG LANG=en_US.UTF-8
+
+ENV TZ=${TZ}
+ENV LANG=${LANG}
+ENV LC_ALL=${LANG}
+ENV LANGUAGE=${LANG}
+ENV DEBIAN_FRONTEND=noninteractive
+
+# prepare #1
+RUN test ! -z "${MIRROR}" &&                            \
+    sed -e "s|http://archive.ubuntu.com|${MIRROR}|g"    \
+        -e "s|http://security.ubuntu.com|${MIRROR}|g"   \
+        -i /etc/apt/sources.list || true;               \
+    apt-get update &&                                   \
+    apt-get install -y locales tzdata &&                \
+    sed -i "/C.UTF-8/s/^# //g" /etc/locale.gen &&       \
+    sed -i "/$LANG/s/^# //g" /etc/locale.gen &&         \
+    locale-gen &&                                       \
+    ln -svf /usr/share/zoneinfo/$TZ /etc/localtime &&   \
+    echo "$TZ" > /etc/timezone
+
+# prepare #2
+RUN apt-get install -y                                  \
+        binutils bzip2 diffutils flex gawk              \
+        libc-dev libz-dev libncurses-dev                \
+        build-essential perl rsync wget file            \
+        python3 python3-setuptools subversion git unzip
+
+# clear
+RUN apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# use bash as default shell
+RUN ln -sfv /bin/bash /bin/sh

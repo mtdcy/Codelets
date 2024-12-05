@@ -29,7 +29,11 @@ format_lines() {
         [ -z "$line" ] && continue
 
         #echo -e "\n = $line"
-        IFS=' ' read proto _ _ conn <<< "$line"
+        # proto proto_number ...
+        IFS=' ' read proto _ conn <<< "$line"
+
+        # the live time may missing
+        [[ "$conn" =~ ^[0-9]+ ]] && IFS=' ' read _ conn <<< "$conn"
 
         state=""
         [[ "$conn" =~ ^[A-Z]+ ]] && IFS=' ' read state conn <<< "$conn"
@@ -38,11 +42,11 @@ format_lines() {
         case "$proto" in
             tcp|udp)
                 IFS=' =' read _ src0 _ dst0 _ sp0 _ dp0 conn <<< "$conn"
-                printf " %-7s %-${WI}s => %-${WI}s" "[$proto]" "$src0:$sp0" "$dst0:$dp0"
+                printf " %-7.7s %-${WI}s => %-${WI}s" "$proto" "$src0:$sp0" "$dst0:$dp0"
                 ;;
             *)
                 IFS=' =' read _ src0 _ dst0 _ _ _ conn <<< "$conn"
-                printf " %-7s %-${WI}s => %-${WI}s" "[$proto]" "$dst0" "$src0"
+                printf " %-7.7s %-${WI}s => %-${WI}s" "$proto" "$dst0" "$src0"
                 ;;
         esac
 
@@ -94,7 +98,7 @@ which conntrack 2>&1 > /dev/null || apt install conntrack
 
 host="$1"
 IPv4="^([0-9]{1,3}\.){3}([0-9]{1,3}){1}"
-IPv6="^([0-9a-fA-F]{0,4}:){7}([0-9a-fA-F]{0,4}){1}"
+IPv6="^([0-9a-fA-F]{0,4}:)+([0-9a-fA-F]{0,4}){1}"
 
 if [[ $host =~ $IPv4 ]]; then
     host4=$host

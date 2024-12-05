@@ -15,7 +15,7 @@
 # v0.1 - initial version
 
 # nft table
-NFT=${TABLE:-fw4}
+NFT=${TABLE:-inet fw4}
 
 # root privilege is required
 [ $(id -u) -eq 0 ] || exec sudo "$0" "$@"
@@ -60,10 +60,12 @@ update_dnsmasq() {
     # delete records
     sed -i "/server=\/$1\/*/d" "$dnsmasq"
     sed -i "/nftset=\/$1\/*/d" "$dnsmasq"
+    sed -i "/address=\/$1\/*/d" "$dnsmasq"
 
     for s in ${@:3}; do
+        #echo "address=/$1/::" >> "$dnsmasq" # filter AAAA request
         echo "server=/$1/${s#@}" >> "$dnsmasq"
-        echo "nftset=/$1/4#inet#$NFT#$2" >> "$dnsmasq"
+        echo "nftset=/$1/4#${NFT/ /\#}#$2" >> "$dnsmasq"
     done
 }
 
@@ -71,8 +73,8 @@ update_dnsmasq() {
 update_ipset() {
     local name=${2:-$(basename ${1%.ip})}
 
-    nft flush set inet $NFT $name &>/dev/null
-    nft add set inet $NFT $name { type ipv4_addr \; flags interval \; }
+    nft flush set $NFT $name &>/dev/null
+    nft add set $NFT $name { type ipv4_addr \; flags interval \; }
 
     #echo "ipset $name:"
     local dns=()
@@ -89,7 +91,7 @@ update_ipset() {
         echo $host
 
         # add ip to set directly
-        is_host $host && nft add element inet $NFT $name { $host } && continue
+        is_host $host && nft add element $NFT $name { $host } && continue
 
         #[ ${#dns[@]} -eq 0 ] || echo " ${dns[@]}"
         update_dnsmasq $host $name ${dns[@]}
@@ -99,8 +101,8 @@ update_ipset() {
 # update_iplst path/to/some.lst [name]
 update_iplst() {
     name=${2:-$(basename ${1%.lst})}
-    nft flush set inet $NFT $name &>/dev/null
-    nft add set inet $NFT $name { type ipv4_addr \; flags interval \; }
+    nft flush set $NFT $name &>/dev/null
+    nft add set $NFT $name { type ipv4_addr \; flags interval \; }
     while read ips; do
         [[ $ips =~ '#' ]] && continue # ignore comments
 
@@ -168,15 +170,15 @@ esac
 
 # route ipset to dev
 # forward
-if ! nft list chain inet $NFT mangle_prerouting | grep "ip daddr @$ipset"; then
-    nft insert rule inet $NFT mangle_prerouting ip daddr @$ipset counter ct mark set $iptmark
-    nft add rule inet $NFT mangle_prerouting ip daddr @$ipset counter meta mark set ct mark
+if ! nft list chain $NFT mangle_prerouting | grep "ip daddr @$ipset"; then
+    nft insert rule $NFT mangle_prerouting ip daddr @$ipset counter ct mark set $iptmark
+    nft add rule $NFT mangle_prerouting ip daddr @$ipset counter meta mark set ct mark
 fi
 
 # output
-if ! nft list chain inet $NFT mangle_output | grep "ip daddr @$ipset"; then
-    nft insert rule inet $NFT mangle_output ip daddr @$ipset counter ct mark set $iptmark
-    nft add rule inet $NFT mangle_output ip daddr @$ipset counter meta mark set ct mark
+if ! nft list chain $NFT mangle_output | grep "ip daddr @$ipset"; then
+    nft insert rule $NFT mangle_output ip daddr @$ipset counter ct mark set $iptmark
+    nft add rule $NFT mangle_output ip daddr @$ipset counter meta mark set ct mark
 fi
 
 # TCPMSS [TODO]
@@ -190,6 +192,6 @@ fi
 #ipset list $ipset
 #echo ""
 #echo "= iptables:"
-nft list set inet $NFT $ipset
-nft list chain inet $NFT mangle_output
-nft list chain inet $NFT mangle_prerouting
+nft list set $NFT $ipset
+nft list chain $NFT mangle_output
+nft list chain $NFT mangle_prerouting
